@@ -1,0 +1,6 @@
+{
+  "name": "The Kernel — Voice-Driven Autonomous AI Shell & Kernel Engine",
+  "description": "A voice-first, high-performance dynamic shell launcher and execution environment with full-duplex VAD, anti-pop audio ramping, dialectal semantic intent engine, zero-shot generative UI, and autonomous workspaces.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
