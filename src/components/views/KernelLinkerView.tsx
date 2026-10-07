@@ -1,6 +1,7 @@
 import React, { useRef, useState, useEffect } from 'react';
 import { BoundKernel } from '../../types/kernel';
 import { StorageEngine } from '../../services/storageEngine';
+import { initOrExtractZipKernel } from '../../services/zipEngine';
 import {
   Cpu,
   Upload,
@@ -48,36 +49,50 @@ export const KernelLinkerView: React.FC<KernelLinkerViewProps> = ({
     setExtractMessage('جاري قراءة واستخراج بيانات النواة من الملف...');
 
     try {
-      const text = await file.text();
       let extractedName = file.name.replace(/\.[^/.]+$/, '');
       let extractedVersion = '1.0.0-core';
       let extractedRules: string[] = [];
       let extractedInstructions: string[] = [];
+      let rawSnippet = '';
 
-      try {
-        // Try parsing if JSON
-        const json = JSON.parse(text);
-        extractedName = json.name || json.kernelName || extractedName;
-        extractedVersion = json.version || extractedVersion;
-        if (Array.isArray(json.rules)) extractedRules = json.rules;
-        if (Array.isArray(json.instructions)) extractedInstructions = json.instructions;
-        if (Array.isArray(json.capabilities)) {
-          extractedRules.push(...json.capabilities.map((c: any) => `القدرة: ${c}`));
-        }
-      } catch {
-        // Text/code file: extract rules line by line or comments
-        const lines = text.split('\n').filter((l) => l.trim().length > 0);
-        extractedRules = lines
-          .filter((l) => l.startsWith('#') || l.startsWith('//') || l.includes('rule') || l.includes('instruction'))
-          .slice(0, 10)
-          .map((l) => l.replace(/^[#//*\s]+/, ''));
+      const isZip = /\.zip$/i.test(file.name) || file.type.includes('zip');
 
-        if (extractedRules.length === 0) {
-          extractedRules = [
-            `معالجة أوامر ملف: ${file.name}`,
-            'تشغيل التعليمات التلقائية المدمجة',
-            'دعم الميكروفون والصوت المباشر',
-          ];
+      if (isZip) {
+        // Read and extract ZIP file ONCE in-memory for session initialization
+        const cached = await initOrExtractZipKernel(file, file.name);
+        extractedName = cached.kernelName;
+        extractedVersion = cached.version;
+        extractedRules = cached.rules;
+        extractedInstructions = cached.instructions;
+        rawSnippet = cached.summaryContext;
+      } else {
+        const text = await file.text();
+        rawSnippet = text.slice(0, 5000);
+        try {
+          // Try parsing if JSON
+          const json = JSON.parse(text);
+          extractedName = json.name || json.kernelName || extractedName;
+          extractedVersion = json.version || extractedVersion;
+          if (Array.isArray(json.rules)) extractedRules = json.rules;
+          if (Array.isArray(json.instructions)) extractedInstructions = json.instructions;
+          if (Array.isArray(json.capabilities)) {
+            extractedRules.push(...json.capabilities.map((c: any) => `القدرة: ${c}`));
+          }
+        } catch {
+          // Text/code file: extract rules line by line or comments
+          const lines = text.split('\n').filter((l) => l.trim().length > 0);
+          extractedRules = lines
+            .filter((l) => l.startsWith('#') || l.startsWith('//') || l.includes('rule') || l.includes('instruction'))
+            .slice(0, 10)
+            .map((l) => l.replace(/^[#//*\s]+/, ''));
+
+          if (extractedRules.length === 0) {
+            extractedRules = [
+              `معالجة أوامر ملف: ${file.name}`,
+              'تشغيل التعليمات التلقائية المدمجة',
+              'دعم الميكروفون والصوت المباشر',
+            ];
+          }
         }
       }
 
@@ -89,13 +104,26 @@ export const KernelLinkerView: React.FC<KernelLinkerViewProps> = ({
         version: extractedVersion,
         rules: extractedRules.length > 0 ? extractedRules : ['النواة متصلة وتعمل بكامل الصلاحيات'],
         instructions: extractedInstructions,
-        rawContent: text.slice(0, 5000),
+        rawContent: rawSnippet,
         isActive: true,
       };
 
       onBindKernel(newBoundKernel);
       StorageEngine.saveBoundKernel(newBoundKernel);
-      setExtractMessage(`تم بنجاح ربط النواة: ${extractedName} (${file.name})! المحرك الآن يعمل بتوجيهاتها.`);
+
+      // Notify server to cache context in-memory once (eliminates passing zip repeatedly)
+      fetch('/api/kernel/session-init', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          kernelName: extractedName,
+          rules: extractedRules,
+          instructions: extractedInstructions,
+          summaryContext: `النواة: ${extractedName} (${extractedVersion}). القواعد: ${extractedRules.join(' | ')}`,
+        }),
+      }).catch(() => {});
+
+      setExtractMessage(`تم بنجاح فك ضغط وحفظ سياق النواة في الذاكرة: ${extractedName} (${file.name})!`);
     } catch (err: any) {
       setExtractMessage(`خطأ في قراءة الملف: ${err.message}`);
     } finally {

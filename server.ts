@@ -106,7 +106,7 @@ function resolveDialectalIntent(cleanText: string, utterance: string) {
 
 // Resilient Gemini model invoker that uses fast, available models with active free quota
 async function generateGeminiContentWithFallback(contents: any, config?: any) {
-  const models = ['gemini-3.5-flash-lite', 'gemini-3.6-flash', 'gemini-3.1-flash-lite'];
+  const models = ['gemini-3.8-flash', 'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite'];
   let lastError: any = null;
   for (const model of models) {
     try {
@@ -257,7 +257,22 @@ function createWavFromPcm(pcmBuffer: Buffer, sampleRate: number = 16000): Buffer
   return Buffer.concat([header, pcmBuffer]);
 }
 
-async function processAudioWithGemini(audioBase64: string, mimeType: string = 'audio/wav') {
+// In-memory Kernel State & Context Cache (prevents repeated ZIP parsing during voice interactions)
+interface ServerKernelContext {
+  summaryContext: string;
+  rules: string[];
+  instructions: string[];
+  updatedAt: string;
+}
+
+let globalInMemoryKernelContext: ServerKernelContext | null = null;
+const sessionKernelContexts = new WeakMap<WebSocket, ServerKernelContext>();
+
+async function processAudioWithGemini(
+  audioBase64: string,
+  mimeType: string = 'audio/wav',
+  contextOverride?: string
+) {
   if (!audioBase64 || audioBase64.length < 300) {
     return { transcript: '', intent: 'INTENT_GENERAL_QUERY' };
   }
@@ -274,7 +289,12 @@ async function processAudioWithGemini(audioBase64: string, mimeType: string = 'a
     setTimeout(() => reject(new Error('Audio transcribe timeout')), 10000)
   );
 
-  const prompt = `Listen to this user spoken audio recording carefully. The user might speak Arabic dialect (Gulf, Iraqi, Egyptian, Levantine, Maghrebi, Modern Standard) or English.
+  const activeContext = contextOverride || globalInMemoryKernelContext?.summaryContext || '';
+  const contextDirective = activeContext
+    ? `\nActive Loaded Kernel In-Memory Context & Rules:\n"${activeContext}"\nConsider this context when interpreting dialect, intent, or requested commands.\n`
+    : '';
+
+  const prompt = `Listen to this user spoken audio recording carefully. The user might speak Arabic dialect (Gulf, Iraqi, Egyptian, Levantine, Maghrebi, Modern Standard) or English.${contextDirective}
 1. Transcribe the exact words spoken into text.
 2. Identify the intent according to these rules:
    - "INTENT_BUILD_APP": user wants to build an app for android, ios, or react (e.g. "ابني تطبيق", "بناء تطبيق", "تطبيق اندرويد", "ايفون", "build app")
@@ -349,25 +369,40 @@ Return a strict JSON object:
   };
 }
 
-async function generateTTSAudio(text: string): Promise<string | null> {
+async function generateTTSAudio(text: string, voiceName: string = 'Kore'): Promise<string | null> {
   if (!text || !apiKey || apiKey === 'MY_GEMINI_API_KEY') return null;
-  try {
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash-lite-tts',
-      contents: [{ role: 'user', parts: [{ text }] }],
-      config: {
-        responseModalities: ['AUDIO'],
-        speechConfig: {
-          voiceConfig: {
-            prebuiltVoiceConfig: { voiceName: 'Kore' },
+
+  // Multi-tier TTS model list with automatic quota fallback:
+  // 1. gemini-3.8-flash-tts (expressive, high quality, active quota)
+  // 2. gemini-3.8-flash-lite-tts (efficient TTS)
+  const ttsModels = ['gemini-3.8-flash-tts', 'gemini-3.8-flash-lite-tts'];
+
+  for (const model of ttsModels) {
+    try {
+      const response = await ai.models.generateContent({
+        model,
+        contents: [{ role: 'user', parts: [{ text }] }],
+        config: {
+          responseModalities: ['AUDIO'],
+          speechConfig: {
+            voiceConfig: {
+              prebuiltVoiceConfig: { voiceName: voiceName || 'Kore' },
+            },
           },
         },
-      },
-    });
-    return response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data || null;
-  } catch {
-    return null;
+      });
+      const data = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+      if (data) return data;
+    } catch (err: any) {
+      if (err.status === 429 || err.message?.includes('429') || err.message?.includes('RESOURCE_EXHAUSTED')) {
+        console.warn(`TTS model ${model} quota exhausted, falling back to next TTS tier or client voice...`);
+        continue;
+      }
+      console.warn(`TTS model ${model} notice:`, err.message);
+    }
   }
+
+  return null;
 }
 
 // WebSocket Server for High-Speed Bi-directional Audio Streaming
@@ -385,7 +420,20 @@ wss.on('connection', (ws: WebSocket) => {
 
     try {
       const msg = JSON.parse(data.toString());
-      if (msg.type === 'start') {
+      if (msg.type === 'init_kernel_context') {
+        const ctx: ServerKernelContext = {
+          summaryContext: msg.summaryContext || '',
+          rules: msg.rules || [],
+          instructions: msg.instructions || [],
+          updatedAt: new Date().toISOString(),
+        };
+        sessionKernelContexts.set(ws, ctx);
+        if (!globalInMemoryKernelContext) {
+          globalInMemoryKernelContext = ctx;
+        }
+        ws.send(JSON.stringify({ type: 'kernel_context_ready' }));
+        return;
+      } else if (msg.type === 'start') {
         sessionPcmChunks = [];
         if (msg.sampleRate) clientSampleRate = msg.sampleRate;
         ws.send(JSON.stringify({ type: 'session_ready' }));
@@ -410,8 +458,13 @@ wss.on('connection', (ws: WebSocket) => {
           return;
         }
 
+        // Retrieve pre-cached in-memory kernel context without re-reading any ZIP files
+        const sessionCtx =
+          sessionKernelContexts.get(ws)?.summaryContext ||
+          globalInMemoryKernelContext?.summaryContext;
+
         // Process through high-speed multimodal Gemini (gemini-3.5-flash-lite)
-        const result = await processAudioWithGemini(base64Audio, 'audio/wav');
+        const result = await processAudioWithGemini(base64Audio, 'audio/wav', sessionCtx);
 
         if (!result.transcript || !result.transcript.trim()) {
           ws.send(JSON.stringify({ type: 'empty' }));
@@ -459,14 +512,31 @@ wss.on('connection', (ws: WebSocket) => {
   });
 });
 
-// Audio Processing HTTP fallback endpoint
+// Session Initialization endpoint: Caches extracted kernel context in-memory once per session
+app.post('/api/kernel/session-init', (req, res) => {
+  const { summaryContext, rules = [], instructions = [], kernelName } = req.body;
+  globalInMemoryKernelContext = {
+    summaryContext: summaryContext || `النواة: ${kernelName || 'Kernel'} جاهزة للعمل.`,
+    rules,
+    instructions,
+    updatedAt: new Date().toISOString(),
+  };
+  return res.json({
+    status: 'initialized',
+    message: 'Kernel context stored in-memory for zero-latency voice interaction',
+    context: globalInMemoryKernelContext,
+  });
+});
+
+// Audio Processing HTTP fallback endpoint (uses in-memory context, no ZIP re-reading)
 app.post('/api/voice/process-audio', async (req, res) => {
-  const { audioBase64, mimeType = 'audio/wav' } = req.body;
+  const { audioBase64, mimeType = 'audio/wav', kernelContext } = req.body;
   if (!audioBase64 || audioBase64.length < 300) {
     return res.json({ transcript: '', intent: 'INTENT_GENERAL_QUERY' });
   }
 
-  const result = await processAudioWithGemini(audioBase64, mimeType);
+  const contextToUse = kernelContext || globalInMemoryKernelContext?.summaryContext;
+  const result = await processAudioWithGemini(audioBase64, mimeType, contextToUse);
   return res.json(result);
 });
 
@@ -567,32 +637,14 @@ app.post('/api/tts', async (req, res) => {
   }
 
   try {
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash-lite-tts',
-      contents: [
-        {
-          role: 'user',
-          parts: [{ text }],
-        },
-      ],
-      config: {
-        responseModalities: ['AUDIO'],
-        speechConfig: {
-          voiceConfig: {
-            prebuiltVoiceConfig: { voiceName: voice || 'Kore' },
-          },
-        },
-      },
-    });
-
-    const base64Audio = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-    if (base64Audio) {
-      return res.json({ audioBase64: base64Audio, mimeType: 'audio/wav' });
+    const audioBase64 = await generateTTSAudio(text, voice);
+    if (audioBase64) {
+      return res.json({ audioBase64, mimeType: 'audio/wav', fallback: false });
     }
 
-    return res.json({ fallback: true });
+    return res.json({ fallback: true, message: 'Using client Web Speech synthesis fallback' });
   } catch (err: any) {
-    console.error('Gemini TTS error:', err);
+    console.warn('TTS endpoint notice:', err.message);
     return res.json({ fallback: true, error: err.message });
   }
 });

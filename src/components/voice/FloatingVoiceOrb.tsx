@@ -26,11 +26,35 @@ export const FloatingVoiceOrb: React.FC<FloatingVoiceOrbProps> = ({
     };
   }, [callStatus]);
 
-  const handleToggle = () => {
-    if (callStatus === 'IDLE') {
-      audioEngine.safeStartMicrophone().catch(console.error);
-    } else {
-      audioEngine.safeStopMicrophone();
+  // Safety Abort Controller Timeout: 5 seconds in THINKING state
+  useEffect(() => {
+    if (callStatus !== 'THINKING') return;
+
+    const safetyTimer = setTimeout(() => {
+      audioEngine.resetToListening();
+    }, 5000);
+
+    return () => clearTimeout(safetyTimer);
+  }, [callStatus]);
+
+  const handleToggle = async () => {
+    try {
+      if (callStatus === 'IDLE') {
+        await audioEngine.safeStartMicrophone();
+      } else if (callStatus === 'THINKING') {
+        audioEngine.resetToListening();
+      } else {
+        audioEngine.safeStopMicrophone();
+      }
+    } catch (e) {
+      console.error('[FloatingVoiceOrb] Toggle error:', e);
+    } finally {
+      // Ensure state machine is returned to IDLE or LISTENING, never stuck in THINKING
+      setTimeout(() => {
+        if (audioEngine.getStatus() === 'THINKING') {
+          audioEngine.resetToListening();
+        }
+      }, 350);
     }
   };
 

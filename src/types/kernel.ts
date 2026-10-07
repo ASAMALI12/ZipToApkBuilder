@@ -56,13 +56,14 @@ export interface IntentParameters {
 }
 
 export interface IntentResult {
-  intent: IntentEnum;
+  intent: IntentEnum | string;
   confidence: number;
   parameters: IntentParameters;
-  ui_action: UIAction;
+  ui_action: UIAction | string;
   assistant_response: string;
   voice_spoken_text: string;
   dynamic_schema?: DynamicUISchema;
+  hasAudioResponse?: boolean;
 }
 
 export interface DynamicUIComponent {
@@ -170,7 +171,7 @@ export interface KernelMemoryLog {
   id: string;
   timestamp: string;
   utterance: string;
-  intent: IntentEnum;
+  intent: IntentEnum | string;
   response: string;
-  workspace: WorkspaceType;
+  workspace: WorkspaceType | string;
 }

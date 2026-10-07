@@ -114,17 +114,40 @@ export const CentralCallOrb: React.FC<CentralCallOrbProps> = ({
     return () => cancelAnimationFrame(animId);
   }, [callStatus, micEnergy, outputEnergy]);
 
+  // Safety Abort Controller Timeout: 5 seconds in THINKING state
+  useEffect(() => {
+    if (callStatus !== 'THINKING') return;
+
+    const safetyAbortTimer = setTimeout(() => {
+      console.warn('[CentralCallOrb] 5s Safety Abort Timeout reached in THINKING state. Resetting to LISTENING.');
+      audioEngine.resetToListening();
+    }, 5000);
+
+    return () => clearTimeout(safetyAbortTimer);
+  }, [callStatus]);
+
   const handleToggleCall = async () => {
     setPermissionError(null);
-    if (callStatus === 'IDLE') {
-      try {
+    try {
+      if (callStatus === 'IDLE') {
         await audioEngine.safeStartMicrophone();
-      } catch {
-        setPermissionError('يرجى السماح بالوصول إلى الميكروفون من إعدادات المتصفح.');
+      } else if (callStatus === 'LISTENING') {
+        // In TAP_TO_TALK or if user taps while listening, commit speech immediately!
+        await audioEngine.commitCurrentUtterance();
+      } else if (callStatus === 'THINKING') {
+        // Immediate safety abort if tapped during thinking
+        audioEngine.resetToListening();
       }
-    } else if (callStatus === 'LISTENING') {
-      // In TAP_TO_TALK or if user taps while listening, commit speech immediately!
-      await audioEngine.commitCurrentUtterance();
+    } catch (err: any) {
+      console.error('[CentralCallOrb] Call toggle error:', err);
+      setPermissionError('يرجى السماح بالوصول إلى الميكروفون من إعدادات المتصفح.');
+    } finally {
+      // Ensure state is always safely returned to IDLE or LISTENING, never stuck in THINKING
+      setTimeout(() => {
+        if (audioEngine.getStatus() === 'THINKING') {
+          audioEngine.resetToListening();
+        }
+      }, 350);
     }
   };
 

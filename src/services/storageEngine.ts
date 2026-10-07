@@ -9,6 +9,19 @@ const STORAGE_KEYS = {
   BOUND_KERNEL: 'kernel_bound_core_v1',
 };
 
+export interface InMemoryKernelState {
+  kernelName: string;
+  version: string;
+  rules: string[];
+  instructions: string[];
+  summaryContext: string;
+  isLoaded: boolean;
+  timestamp: string;
+}
+
+// In-Memory state for the active session (prevents repeated ZIP decompression or storage reads)
+let inMemoryKernelState: InMemoryKernelState | null = null;
+
 // Default initial starter project files
 export const DEFAULT_INITIAL_PROJECT_FILES: ProjectFile[] = [
   {
@@ -59,12 +72,61 @@ export default function KernelApp() {
   mode: 'autonomous_duplex',
   bargeInThresholdMs: 150,
   antiPopRampMs: 30,
+  audioSampleRate: 24000,
+  vadSilenceDurationMs: 700,
   dialectsSupported: ['Gulf', 'Iraqi', 'Egyptian', 'Levantine', 'Standard', 'English'],
 };`,
   },
 ];
 
 export class StorageEngine {
+  /**
+   * Session Initialization: caches the extracted instructions & rules in memory
+   * once at session start. Subsequent voice interactions pull from memory directly.
+   */
+  public static initSessionKernelContext(kernel: BoundKernel | null): InMemoryKernelState {
+    if (!kernel) {
+      inMemoryKernelState = {
+        kernelName: 'Default Core',
+        version: '3.4.0',
+        rules: ['النواة الافتراضية جاهزة للعمل'],
+        instructions: [],
+        summaryContext: 'نواة النظام تعمل بالوضع الافتراضي.',
+        isLoaded: false,
+        timestamp: new Date().toISOString(),
+      };
+      return inMemoryKernelState;
+    }
+
+    const rules = kernel.rules || [];
+    const instructions = kernel.instructions || [];
+    const summary = `النواة: ${kernel.name} (${kernel.version}). التوجيهات: ${[...rules, ...instructions].slice(0, 5).join(' | ')}`;
+
+    inMemoryKernelState = {
+      kernelName: kernel.name,
+      version: kernel.version,
+      rules,
+      instructions,
+      summaryContext: summary,
+      isLoaded: true,
+      timestamp: new Date().toISOString(),
+    };
+
+    return inMemoryKernelState;
+  }
+
+  public static getInMemoryKernelContext(): InMemoryKernelState | null {
+    if (!inMemoryKernelState) {
+      const bound = StorageEngine.loadBoundKernel();
+      return StorageEngine.initSessionKernelContext(bound);
+    }
+    return inMemoryKernelState;
+  }
+
+  public static setInMemoryKernelContext(state: InMemoryKernelState | null): void {
+    inMemoryKernelState = state;
+  }
+
   public static loadFiles(): ProjectFile[] {
     try {
       const data = localStorage.getItem(STORAGE_KEYS.PROJECT_FILES);
@@ -173,8 +235,10 @@ export class StorageEngine {
     try {
       if (kernel) {
         localStorage.setItem(STORAGE_KEYS.BOUND_KERNEL, JSON.stringify(kernel));
+        StorageEngine.initSessionKernelContext(kernel);
       } else {
         localStorage.removeItem(STORAGE_KEYS.BOUND_KERNEL);
+        StorageEngine.initSessionKernelContext(null);
       }
     } catch {}
   }

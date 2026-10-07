@@ -1,7 +1,7 @@
 /**
  * Streaming AudioTrack & Web Audio API Player
- * Implements chunk-by-chunk queue scheduling with anti-pop micro-fading
- * and sub-20ms barge-in interruption.
+ * Implements chunk-by-chunk queue scheduling with anti-pop micro-fading,
+ * calibrated 24000Hz / 48000Hz AudioContext, and sub-20ms barge-in interruption.
  */
 
 export class StreamingAudioPlayer {
@@ -26,8 +26,18 @@ export class StreamingAudioPlayer {
   private async ensureAudioContext(): Promise<AudioContext> {
     if (!this.audioCtx || this.audioCtx.state === 'closed') {
       const AudioCtxClass = window.AudioContext || (window as any).webkitAudioContext;
-      this.audioCtx = new AudioCtxClass();
+      try {
+        // Preferred 24000Hz sample rate for crisp speech output and low memory
+        this.audioCtx = new AudioCtxClass({ sampleRate: 24000 });
+      } catch {
+        try {
+          this.audioCtx = new AudioCtxClass({ sampleRate: 48000 });
+        } catch {
+          this.audioCtx = new AudioCtxClass();
+        }
+      }
     }
+
     if (this.audioCtx.state === 'suspended') {
       await this.audioCtx.resume();
     }
@@ -157,7 +167,7 @@ export class StreamingAudioPlayer {
       for (let i = 0; i < pcm16.length; i++) {
         float32[i] = pcm16[i] / 32768.0;
       }
-      const rawBuffer = ctx.createBuffer(1, float32.length, 24000);
+      const rawBuffer = ctx.createBuffer(1, float32.length, ctx.sampleRate || 24000);
       rawBuffer.copyToChannel(float32, 0);
       await this.enqueueBuffer(rawBuffer);
     }

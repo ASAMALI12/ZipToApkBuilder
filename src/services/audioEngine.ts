@@ -1,6 +1,7 @@
 import { CallStatus, AudioEngineMetrics, IntentResult } from '../types/kernel';
 import { SileroStyleVAD } from './vadEngine';
 import { StreamingAudioPlayer } from './streamingAudioPlayer';
+import { StorageEngine } from './storageEngine';
 
 type StatusListener = (status: CallStatus) => void;
 type TranscriptListener = (text: string, isFinal: boolean) => void;
@@ -107,10 +108,14 @@ class AudioEngine {
     this.vad = new SileroStyleVAD({
       sampleRate: 16000,
       frameSize: 512, // 32ms at 16kHz
-      speechThresholdMultiplier: 2.0,
-      hangoverFrames: 12, // ~384ms hangover
-      minSpeechFrames: 2, // ~64ms
-      preRollFrames: 8, // ~256ms pre-roll
+      speechThresholdMultiplier: 1.8,
+      speechThreshold: 0.012,
+      positiveSpeechThreshold: 0.45, // 0.4 - 0.5: smooth, less sensitive to abrupt cutoff
+      silenceDurationMs: 700, // 600ms - 800ms
+      hangoverFrames: 22, // ~704ms
+      minSpeechFrames: 5, // ~160ms: prevents short hesitations from being treated as sentence ends
+      preRollFrames: 10, // 300ms pre-roll buffer to preserve first letter/syllable
+      postRollFrames: 10, // 300ms post-roll buffer to preserve last letter/syllable
     });
 
     this.player = new StreamingAudioPlayer();
@@ -187,10 +192,18 @@ class AudioEngine {
     };
 
     this.player.onPlaybackEnd = () => {
-      if (this.callStatus === 'SPEAKING') {
+      // 1. Automatically resume audioContext if suspended
+      if (this.audioCtx && this.audioCtx.state === 'suspended') {
+        this.audioCtx.resume().catch(() => {});
+      }
+
+      // 2. Reactivate microphone listener immediately without needing refresh or toggle
+      this.isProcessingAudio = false;
+      this.recorded16kChunks = [];
+      this.vad.reset();
+
+      if (this.callStatus !== 'IDLE' && this.callStatus !== 'STOPPING') {
         this.setStatus('LISTENING');
-        this.recorded16kChunks = [];
-        this.vad.reset();
       }
     };
 
@@ -216,6 +229,17 @@ class AudioEngine {
 
       this.ws.onopen = () => {
         this.isWsConnected = true;
+        const kernelCtx = StorageEngine.getInMemoryKernelContext();
+        if (kernelCtx?.summaryContext) {
+          try {
+            this.ws?.send(JSON.stringify({
+              type: 'init_kernel_context',
+              summaryContext: kernelCtx.summaryContext,
+              rules: kernelCtx.rules,
+              instructions: kernelCtx.instructions,
+            }));
+          } catch {}
+        }
       };
 
       this.ws.onmessage = async (event) => {
@@ -315,7 +339,15 @@ class AudioEngine {
     try {
       const AudioCtxClass = window.AudioContext || (window as any).webkitAudioContext;
       if (!this.audioCtx || this.audioCtx.state === 'closed') {
-        this.audioCtx = new AudioCtxClass();
+        try {
+          this.audioCtx = new AudioCtxClass({ sampleRate: 24000 });
+        } catch {
+          try {
+            this.audioCtx = new AudioCtxClass({ sampleRate: 48000 });
+          } catch {
+            this.audioCtx = new AudioCtxClass();
+          }
+        }
       }
       if (this.audioCtx.state === 'suspended') {
         await this.audioCtx.resume();
@@ -333,7 +365,7 @@ class AudioEngine {
           noiseSuppression: true,
           autoGainControl: true,
           channelCount: 1,
-          sampleRate: 16000,
+          sampleRate: 24000,
           // Android Native / Chromium Voice Recognition DSP constraints:
           // Activates AudioSource.VOICE_RECOGNITION hardware pathway on Android devices
           googEchoCancellation: true,
@@ -573,69 +605,91 @@ class AudioEngine {
       return;
     }
 
-    // 1. Try WebSocket fast-path streaming first
-    if (this.ws && this.ws.readyState === WebSocket.OPEN && this.isWsConnected) {
-      try {
-        this.ws.send(JSON.stringify({ type: 'end_utterance', audioBase64: base64Audio }));
-
-        // 4-second watchdog timer: if server WS stalls, recover to LISTENING
-        setTimeout(() => {
-          if (this.isProcessingAudio && this.callStatus === 'THINKING') {
-            this.isProcessingAudio = false;
-            this.setStatus('LISTENING');
-            this.vad.reset();
-          }
-        }, 4000);
-
-        return;
-      } catch {
-        // Fall through to HTTP fallback
+    // 5-second Safety Abort Controller Timeout for "THINKING" state
+    let isHandled = false;
+    const safetyTimer = setTimeout(() => {
+      if (!isHandled && this.callStatus === 'THINKING') {
+        console.warn('[AudioEngine] 5s Safety Timeout in THINKING state. Resetting to LISTENING.');
+        this.resetToListening();
       }
-    }
+    }, 5000);
 
-    // 2. HTTP Fallback Path
     try {
-      const response = await fetch('/api/voice/process-audio', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          audioBase64: base64Audio,
-          mimeType: 'audio/wav',
-        }),
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-        this.isProcessingAudio = false;
-
-        if (data.transcript && data.transcript.trim()) {
-          this.notifyTranscript(data.transcript.trim(), true);
-        }
-
-        if (data.intent) {
-          this.notifyResult({
-            intent: data.intent,
-            confidence: data.confidence || 0.95,
-            parameters: { target: data.intent, raw_utterance: data.transcript || '' },
-            ui_action: data.ui_action || 'ROUTE_PREDEFINED',
-            assistant_response: data.assistant_response || '',
-            voice_spoken_text: data.voice_spoken_text || '',
-          });
-        }
-
-        if (data.voice_spoken_text) {
-          this.playFallbackSpeech(data.voice_spoken_text);
+      // 1. Try WebSocket fast-path streaming first
+      if (this.ws && this.ws.readyState === WebSocket.OPEN && this.isWsConnected) {
+        try {
+          this.ws.send(JSON.stringify({ type: 'end_utterance', audioBase64: base64Audio }));
+          return;
+        } catch {
+          // Fall through to HTTP fallback
         }
       }
-    } catch (err) {
-      console.warn('[AudioEngine] HTTP audio processing notice:', err);
+
+      // 2. HTTP Fallback Path
+      try {
+        const response = await fetch('/api/voice/process-audio', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            audioBase64: base64Audio,
+            mimeType: 'audio/wav',
+          }),
+        });
+
+        if (response.ok) {
+          isHandled = true;
+          clearTimeout(safetyTimer);
+          const data = await response.json();
+          this.isProcessingAudio = false;
+
+          if (data.transcript && data.transcript.trim()) {
+            this.notifyTranscript(data.transcript.trim(), true);
+          }
+
+          if (data.intent) {
+            this.notifyResult({
+              intent: data.intent,
+              confidence: data.confidence || 0.95,
+              parameters: { target: data.intent, raw_utterance: data.transcript || '' },
+              ui_action: data.ui_action || 'ROUTE_PREDEFINED',
+              assistant_response: data.assistant_response || '',
+              voice_spoken_text: data.voice_spoken_text || '',
+            });
+          }
+
+          if (data.voice_spoken_text) {
+            this.playFallbackSpeech(data.voice_spoken_text);
+          }
+        }
+      } catch (err) {
+        console.warn('[AudioEngine] HTTP audio processing notice:', err);
+      }
     } finally {
-      this.isProcessingAudio = false;
-      if (this.callStatus === 'THINKING') {
-        this.setStatus('LISTENING');
-        this.vad.reset();
-      }
+      // Always ensure state is safely returned and not stuck in THINKING
+      setTimeout(() => {
+        if (this.callStatus === 'THINKING' && !this.isProcessingAudio) {
+          this.resetToListening();
+        }
+      }, 500);
     }
+  }
+
+  /**
+   * Resets audio engine state machine to LISTENING,
+   * automatically resumes audioContext, and reactivates the microphone listener.
+   */
+  public resetToListening(): void {
+    if (this.callStatus === 'IDLE' || this.callStatus === 'STOPPING') return;
+
+    this.isProcessingAudio = false;
+    this.recorded16kChunks = [];
+    this.vad.reset();
+
+    if (this.audioCtx && this.audioCtx.state === 'suspended') {
+      this.audioCtx.resume().catch(() => {});
+    }
+
+    this.setStatus('LISTENING');
   }
 
   /**
@@ -664,19 +718,30 @@ class AudioEngine {
       utterance.rate = 1.0;
 
       utterance.onend = () => {
-        if (this.callStatus === 'SPEAKING') {
+        // Automatically resume AudioContext and reactivate microphone
+        if (this.audioCtx && this.audioCtx.state === 'suspended') {
+          this.audioCtx.resume().catch(() => {});
+        }
+        this.isProcessingAudio = false;
+        this.recorded16kChunks = [];
+        this.vad.reset();
+
+        if (this.callStatus !== 'IDLE' && this.callStatus !== 'STOPPING') {
           this.setStatus('LISTENING');
-          this.recorded16kChunks = [];
-          this.vad.reset();
         }
         resolve();
       };
 
       utterance.onerror = () => {
-        if (this.callStatus === 'SPEAKING') {
+        if (this.audioCtx && this.audioCtx.state === 'suspended') {
+          this.audioCtx.resume().catch(() => {});
+        }
+        this.isProcessingAudio = false;
+        this.recorded16kChunks = [];
+        this.vad.reset();
+
+        if (this.callStatus !== 'IDLE' && this.callStatus !== 'STOPPING') {
           this.setStatus('LISTENING');
-          this.recorded16kChunks = [];
-          this.vad.reset();
         }
         resolve();
       };
