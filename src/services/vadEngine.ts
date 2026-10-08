@@ -55,19 +55,19 @@ export class SileroStyleVAD {
     // 300ms buffer calculation: 300ms / 32ms ≈ 9.4 -> 10 frames = 320ms
     const framesFor300ms = Math.max(9, Math.ceil(300 / msPerFrame));
 
-    // Instant Endpoint Detection: 300ms silence duration for snappy sentence completion
-    const silenceDurationMs = customConfig?.silenceDurationMs ?? 300;
-    const calculatedHangover = Math.max(8, Math.min(10, Math.round(silenceDurationMs / msPerFrame)));
+    // Instant Endpoint Detection: 350ms silence duration for snappy sentence completion
+    const silenceDurationMs = customConfig?.silenceDurationMs ?? 350;
+    const calculatedHangover = Math.max(9, Math.min(12, Math.round(silenceDurationMs / msPerFrame)));
 
     this.config = {
       sampleRate,
       frameSize,
-      speechThresholdMultiplier: 1.25,
-      speechThreshold: 0.0035, // Low threshold ensures capture on first attempt even with quiet voice/mic
-      positiveSpeechThreshold: 0.22, // Highly responsive speech confidence
+      speechThresholdMultiplier: 1.15,
+      speechThreshold: 0.0016, // Ultra-sensitive threshold captures quiet mics and soft voices on the very first try
+      positiveSpeechThreshold: 0.14, // Highly responsive speech confidence
       silenceDurationMs,
       hangoverFrames: customConfig?.hangoverFrames ?? calculatedHangover,
-      minSpeechFrames: customConfig?.minSpeechFrames ?? 2, // 2 frames (~64ms) for instant first-word capture
+      minSpeechFrames: customConfig?.minSpeechFrames ?? 1, // 1 frame (~32ms) captures the very first syllable instantly
       preRollFrames: customConfig?.preRollFrames ?? framesFor300ms, // 300ms buffer before speech
       postRollFrames: customConfig?.postRollFrames ?? framesFor300ms, // 300ms buffer after speech
       ...customConfig,

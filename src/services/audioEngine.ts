@@ -156,12 +156,12 @@ class AudioEngine {
     this.vad = new SileroStyleVAD({
       sampleRate: 16000,
       frameSize: 512, // 32ms at 16kHz
-      speechThresholdMultiplier: 1.25,
-      speechThreshold: 0.0035, // Sensitive capture on first attempt even with quiet voice/mic
-      positiveSpeechThreshold: 0.22, // Highly responsive speech confidence
-      silenceDurationMs: 300, // 300ms silence for instant Endpoint Detection!
+      speechThresholdMultiplier: 1.15,
+      speechThreshold: 0.0016, // Sensitive capture on first attempt even with quiet voice/mic
+      positiveSpeechThreshold: 0.14, // Highly responsive speech confidence
+      silenceDurationMs: 350, // Snappy Endpoint Detection without premature cutoff
       hangoverFrames: 9, // ~288ms
-      minSpeechFrames: 2, // ~64ms: catches the very first syllable on the first attempt
+      minSpeechFrames: 1, // Catches the very first syllable on the first attempt
       preRollFrames: 10, // 300ms pre-roll buffer to preserve first letter/syllable
       postRollFrames: 8, // ~256ms post-roll buffer
     });
@@ -429,9 +429,7 @@ class AudioEngine {
           noiseSuppression: true,
           autoGainControl: true,
           channelCount: 1,
-          sampleRate: 24000,
           // Android Native / Chromium Voice Recognition DSP constraints:
-          // Activates AudioSource.VOICE_RECOGNITION hardware pathway on Android devices
           googEchoCancellation: true,
           googAutoGainControl: true,
           googNoiseSuppression: true,
@@ -439,7 +437,6 @@ class AudioEngine {
           googTypingNoiseDetection: true,
           googAudioMirroring: false,
           voiceActivityDetection: true,
-          latency: 0.01,
         } as any,
         video: false,
       };
@@ -469,7 +466,7 @@ class AudioEngine {
 
         // Vocal Gain Booster
         this.micGainNode = this.audioCtx.createGain();
-        const initialGain = this.sensitivityLevel === 'HIGH' ? 2.8 : 2.0;
+        const initialGain = this.sensitivityLevel === 'HIGH' ? 3.6 : 3.0;
         this.micGainNode.gain.setValueAtTime(initialGain, this.audioCtx.currentTime);
 
         // Spectrum Analyser
@@ -531,10 +528,9 @@ class AudioEngine {
             this.currentLiveTranscript = displayText;
             this.notifyTranscript(displayText, Boolean(finalUtterance.trim()));
 
-            // Streaming Early Intent Match (0ms):
-            // Check if user already voiced an explicit command in interim speech!
+            // Only trigger immediate mute/close mic during interim speech (e.g. user shouts 'اسكت')
             const quickMatch = checkQuickIntent(displayText);
-            if (quickMatch) {
+            if (quickMatch && quickMatch.intent === 'INTENT_CLOSE_MIC') {
               this.currentLiveTranscript = '';
               this.handleDirectTextUtterance(displayText);
               return;

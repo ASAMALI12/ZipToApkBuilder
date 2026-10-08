@@ -36,7 +36,7 @@ export default function App() {
   );
 
   // Apply Intent to Router
-  const applyIntentRouting = useCallback((intent: string, responseText?: string, spokenText?: string) => {
+  const applyIntentRouting = useCallback((intent: string, responseText?: string, spokenText?: string, rawUtterance?: string) => {
     if (responseText || spokenText) {
       setLastAssistantResponse(responseText || spokenText || '');
     }
@@ -47,30 +47,33 @@ export default function App() {
       return;
     }
 
+    // Only switch the workspace screen if the user explicitly asked to open/navigate to it
+    const isExplicitOpen = rawUtterance ? /(?:افتح|انتقل|شاشة|شاشه|صفحة|صفحه|استوديو|قسم)/i.test(rawUtterance) : false;
+
     if (intent === 'INTENT_TEACH_KERNEL') {
       setActiveActionNotice({ name: 'صفحة تعليم وتدريب النواة', workspace: 'kernel_trainer' });
-      setActiveWorkspace('kernel_trainer');
+      if (isExplicitOpen) setActiveWorkspace('kernel_trainer');
     } else if (intent === 'INTENT_BUILD_APP') {
       setActiveActionNotice({ name: 'صفحة بناء وتطوير التطبيقات', workspace: 'app_builder' });
-      setActiveWorkspace('app_builder');
+      if (isExplicitOpen) setActiveWorkspace('app_builder');
     } else if (intent === 'INTENT_GENERATE_IMAGE') {
       setActiveActionNotice({ name: 'استوديو توليد وتصميم الصور', workspace: 'image_generator' });
-      setActiveWorkspace('image_generator');
+      if (isExplicitOpen) setActiveWorkspace('image_generator');
     } else if (intent === 'INTENT_CREATE_GAME') {
       setActiveActionNotice({ name: 'استوديو صناعة وبرمجة الألعاب', workspace: 'game_builder' });
-      setActiveWorkspace('game_builder');
+      if (isExplicitOpen) setActiveWorkspace('game_builder');
     } else if (intent === 'INTENT_CREATE_MEDIA') {
       setActiveActionNotice({ name: 'استوديو إنتاج الفيديو والصوت', workspace: 'media_studio' });
-      setActiveWorkspace('media_studio');
+      if (isExplicitOpen) setActiveWorkspace('media_studio');
     } else if (intent === 'INTENT_CONNECT_GITHUB') {
       setActiveActionNotice({ name: 'ربط منصة جيت هب', workspace: 'github_bridge' });
-      setActiveWorkspace('github_bridge');
+      if (isExplicitOpen) setActiveWorkspace('github_bridge');
     } else if (intent === 'INTENT_CONNECT_SUPABASE') {
       setActiveActionNotice({ name: 'ربط قواعد بيانات سوبابيس', workspace: 'supabase_bridge' });
-      setActiveWorkspace('supabase_bridge');
+      if (isExplicitOpen) setActiveWorkspace('supabase_bridge');
     } else if (intent === 'INTENT_LINK_KERNEL') {
       setActiveActionNotice({ name: 'ربط ملف النواة من الهاتف', workspace: 'kernel_linker' });
-      setActiveWorkspace('kernel_linker');
+      if (isExplicitOpen) setActiveWorkspace('kernel_linker');
     } else {
       // General Query / Knowledge test / Chat: stay on home and converse!
       setActiveActionNotice(null);
@@ -84,7 +87,7 @@ export default function App() {
 
       setCurrentTranscript(utteranceText.trim());
       const parsed = await parseUtterance(utteranceText);
-      applyIntentRouting(parsed.intent, parsed.assistant_response, parsed.voice_spoken_text);
+      applyIntentRouting(parsed.intent, parsed.assistant_response, parsed.voice_spoken_text, utteranceText);
 
       // Voice TTS feedback
       if (parsed.voice_spoken_text) {
@@ -116,7 +119,12 @@ export default function App() {
         setLastAssistantResponse(res.assistant_response || res.voice_spoken_text || '');
       }
       if (res.intent) {
-        applyIntentRouting(res.intent, res.assistant_response, res.voice_spoken_text);
+        applyIntentRouting(
+          res.intent,
+          res.assistant_response,
+          res.voice_spoken_text,
+          res.transcript || res.parameters?.raw_utterance
+        );
       }
     };
 

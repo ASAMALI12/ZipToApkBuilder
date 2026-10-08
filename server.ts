@@ -45,31 +45,34 @@ function resolveDialectalIntent(cleanText: string, utterance: string) {
   let detectedIntent = 'INTENT_GENERAL_QUERY';
   let uiAction = 'ROUTE_PREDEFINED';
 
-  // Check learned knowledge from memory if available
-  const learned = globalInMemoryKernelContext?.summaryContext;
-  let responseText = learned
-    ? `أنا أستمع إليك يا صديقي ومعي تعليمات النواة: ${learned.slice(0, 80)}... تفضل بأمرك أو سؤالك.`
-    : `أنا أستمع إليك يا صديقي، تفضل بأمرك للنواة.`;
-  let spokenText = learned
-    ? `أنا أستمع إليك وجاهز بالتعليمات المحفوظة.`
-    : `تفضل بأمرك، أنا أستمع إليك.`;
+  // Check learned knowledge from memory if available (safely sanitizing any binary artifacts)
+  const rawLearned = globalInMemoryKernelContext?.summaryContext || '';
+  const cleanLearned = rawLearned.replace(/[\x00-\x1F\x7F-\x9F\uFFF0-\uFFFF]/g, '').trim();
+  const safeLearned = cleanLearned && cleanLearned.length > 5 && !cleanLearned.includes('\u0000') ? cleanLearned.slice(0, 100) : '';
 
-  if (/(?:افتح\s+(?:صفحة\s+)?(?:بناء\s+)?(?:ال)?تطبيقات?|ابني\s+(?:لي\s+)?تطبيق|بناء\s+تطبيق|طور\s+تطبيق|أريد\s+بناء\s+تطبيق|build\s+app|create\s+app)/i.test(cleanText)) {
+  let responseText = safeLearned
+    ? `أهلاً بك يا صديقي! أنا أستمع إليك وجاهز بالتعليمات المحفوظة: ${safeLearned}... تفضل بسؤالك أو أمرك.`
+    : `أهلاً بك يا صديقي! أنا أستمع إليك وجاهز للإجابة وتنفيذ أي أمر بكل سرور.`;
+  let spokenText = safeLearned
+    ? `أنا أستمع إليك وجاهز بالتعليمات المحفوظة.`
+    : `أهلاً بك، أنا أستمع إليك وجاهز لمساعدتك.`;
+
+  if (/(?:افتح\s+(?:صفحة|قسم)\s+(?:بناء\s+)?(?:ال)?تطبيقات?|ابني\s+(?:لي\s+)?تطبيق|بناء\s+تطبيق|طور\s+تطبيق|أريد\s+بناء\s+تطبيق|build\s+app|create\s+app)/i.test(cleanText)) {
     detectedIntent = 'INTENT_BUILD_APP';
     uiAction = 'ROUTE_PREDEFINED';
     responseText = 'فتحت لك صفحة بناء وتطوير تطبيقات أندرويد وآيفون.';
     spokenText = 'تم فتح صفحة بناء التطبيقات.';
-  } else if (/(?:افتح\s+(?:صفحة\s+)?(?:ال)?صور|توليد\s+(?:ال)?صور|انشاء\s+صور[ةه]|صمم\s+صور[ةه]|ارسم\s+صور[ةه]|سويلي\s+صور[ةه]|generate\s+image)/i.test(cleanText)) {
+  } else if (/(?:افتح\s+(?:صفحة|استوديو|قسم)\s+(?:ال)?صور|توليد\s+(?:ال)?صور(?:ة|ه)?|انشئ\s+(?:لي\s+)?صور(?:ة|ه)|صمم\s+(?:لي\s+)?صور(?:ة|ه)|ارسم\s+(?:لي\s+)?صور(?:ة|ه)|generate\s+image)/i.test(cleanText)) {
     detectedIntent = 'INTENT_GENERATE_IMAGE';
     uiAction = 'ROUTE_PREDEFINED';
     responseText = 'تم فتح استوديو توليد وتصميم الصور الذكية.';
     spokenText = 'تم فتح صفحة توليد الصور.';
-  } else if (/(?:افتح\s+(?:صفحة\s+)?(?:ال)?(?:العاب|ألعاب|لعبة|لعبه)|اصنع\s+لعب[ةه]|انشاء\s+لعب[ةه]|سوي\s+لعب[ةه]|create\s+game)/i.test(cleanText)) {
+  } else if (/(?:افتح\s+(?:صفحة|استوديو)\s+(?:ال)?(?:العاب|ألعاب|لعبة|لعبه)|اصنع\s+لعب[ةه]|انشاء\s+لعب[ةه]|سوي\s+لعب[ةه]|create\s+game)/i.test(cleanText)) {
     detectedIntent = 'INTENT_CREATE_GAME';
     uiAction = 'ROUTE_PREDEFINED';
     responseText = 'تم فتح استوديو بناء وبرمجة الألعاب التفاعلية.';
     spokenText = 'تم فتح صفحة إنشاء الألعاب.';
-  } else if (/(?:افتح\s+(?:صفحة\s+)?(?:ال)?(?:فيديو|فديو|وسائط|صوت)|انشاء\s+فديو|انشاء\s+فيديو|استوديو\s+فيديو)/i.test(cleanText)) {
+  } else if (/(?:افتح\s+(?:صفحة|استوديو)\s+(?:ال)?(?:فيديو|فديو|وسائط)|انشاء\s+فديو|انشاء\s+فيديو|استوديو\s+فيديو)/i.test(cleanText)) {
     detectedIntent = 'INTENT_CREATE_MEDIA';
     uiAction = 'ROUTE_PREDEFINED';
     responseText = 'تم فتح استوديو إنتاج وتوليد الفيديو والأصوات.';
@@ -225,7 +228,7 @@ Return a strict JSON response conforming to:
 `;
 
     const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('LLM NLU Timeout')), 3500)
+      setTimeout(() => reject(new Error('LLM NLU Timeout')), 9000)
     );
 
     const callPromise = generateGeminiContentWithFallback(prompt, {
@@ -254,16 +257,28 @@ Return a strict JSON response conforming to:
 
     const parsed = JSON.parse(response.text || '{}');
 
-    // Normalize intent name if LLM deviated slightly
+    // Normalize intent name strictly to prevent false triggers
     let intentKey = (parsed.intent || '').toUpperCase();
-    if (!intentKey.startsWith('INTENT_')) {
-      if (intentKey.includes('BUILD') || intentKey.includes('APP')) intentKey = 'INTENT_BUILD_APP';
-      else if (intentKey.includes('IMAGE') || intentKey.includes('PICTURE')) intentKey = 'INTENT_GENERATE_IMAGE';
-      else if (intentKey.includes('VIDEO')) intentKey = 'INTENT_GENERATE_VIDEO';
-      else if (intentKey.includes('TEACH') || intentKey.includes('CHAT') || intentKey.includes('CODE')) intentKey = 'INTENT_TEACH_KERNEL';
-      else if (intentKey.includes('IMPORT') || intentKey.includes('ZIP') || intentKey.includes('EXPORT')) intentKey = 'INTENT_IMPORT_EXPORT';
-      else if (intentKey.includes('CLOSE') || intentKey.includes('MUTE') || intentKey.includes('STOP')) intentKey = 'INTENT_CLOSE_MIC';
-      else if (intentKey.includes('DYNAMIC') || intentKey.includes('DATABASE') || intentKey.includes('WINDOWS')) intentKey = 'INTENT_UNKNOWN_DYNAMIC';
+    const validIntents = [
+      'INTENT_BUILD_APP',
+      'INTENT_GENERATE_IMAGE',
+      'INTENT_GENERATE_VIDEO',
+      'INTENT_TEACH_KERNEL',
+      'INTENT_IMPORT_EXPORT',
+      'INTENT_CLOSE_MIC',
+      'INTENT_CONNECT_GITHUB',
+      'INTENT_CONNECT_SUPABASE',
+      'INTENT_LINK_KERNEL',
+      'INTENT_UNKNOWN_DYNAMIC',
+      'INTENT_GENERAL_QUERY',
+    ];
+
+    if (!validIntents.includes(intentKey)) {
+      if (intentKey === 'BUILD_APP' || intentKey === 'APP_BUILDER') intentKey = 'INTENT_BUILD_APP';
+      else if (intentKey === 'GENERATE_IMAGE' || intentKey === 'IMAGE_GENERATOR') intentKey = 'INTENT_GENERATE_IMAGE';
+      else if (intentKey === 'GENERATE_VIDEO' || intentKey === 'MEDIA_STUDIO') intentKey = 'INTENT_GENERATE_VIDEO';
+      else if (intentKey === 'TEACH_KERNEL' || intentKey === 'KERNEL_TRAINER') intentKey = 'INTENT_TEACH_KERNEL';
+      else if (intentKey === 'CLOSE_MIC' || intentKey === 'MUTE') intentKey = 'INTENT_CLOSE_MIC';
       else intentKey = 'INTENT_GENERAL_QUERY';
     }
     parsed.intent = intentKey;
@@ -379,7 +394,11 @@ Return a strict JSON object:
       const parsed = JSON.parse(responseText);
       if (parsed.transcript && parsed.transcript.trim()) {
         const fallback = resolveDialectalIntent(parsed.transcript.toLowerCase(), parsed.transcript);
-        if (fallback.intent !== 'INTENT_GENERAL_QUERY') {
+        if (fallback.intent === 'INTENT_CLOSE_MIC') {
+          parsed.intent = fallback.intent;
+          parsed.assistant_response = fallback.assistant_response;
+          parsed.voice_spoken_text = fallback.voice_spoken_text;
+        } else if (!parsed.assistant_response && fallback.assistant_response) {
           parsed.intent = fallback.intent;
           parsed.assistant_response = fallback.assistant_response;
           parsed.voice_spoken_text = fallback.voice_spoken_text;

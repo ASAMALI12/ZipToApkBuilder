@@ -28,10 +28,10 @@ export function normalizeArabic(text: string): string {
 
 // Tier 1 Fast-Path Regex patterns operating on normalized text
 const CLOSE_MIC_REGEX = /(?:اغلاق (?:ال)?مايك|اغلاق (?:ال)?ميكروفون|اسكت|انكتم|وقف (?:ال)?مايك|stop mic|close mic|mute mic)/i;
-const BUILD_APP_REGEX = /(?:افتح (?:صفحه )?(?:بناء )?(?:ال)?تطبيق(?:ات)?|ابني (?:لي )?تطبيق|بناء (?:ال)?تطبيق|طور تطبيق|برمج تطبيق|سوي (?:لي )?تطبيق|اعمل تطبيق|صمم تطبيق|اريد بناء تطبيق|build app|create app)/i;
-const GEN_IMAGE_REGEX = /(?:افتح (?:صفحه )?(?:ال)?صور|توليد (?:ال)?صور|انشاء صور[هة]|صمم صور[هة]|ارسم صور[هة]|سوي (?:لي )?صور[هة]|اعمل صور[هة]|generate image|create image)/i;
-const CREATE_GAME_REGEX = /(?:افتح (?:صفحه )?(?:ال)?(?:العاب|لعب[هة])|اصنع لعب[هة]|انشاء لعب[هة]|سوي لعب[هة]|برمج لعب[هة]|اعمل لعب[هة]|create game)/i;
-const CREATE_MEDIA_REGEX = /(?:افتح (?:صفحه )?(?:ال)?(?:فيديو|فديو|وسائط|صوت)|انشاء (?:فيديو|فديو)|استوديو (?:فيديو|فديو)|video|audio studio)/i;
+const BUILD_APP_REGEX = /(?:افتح (?:صفحه|قسم) (?:بناء )?(?:ال)?تطبيق(?:ات)?|ابني (?:لي )?تطبيق|بناء (?:ال)?تطبيق|طور تطبيق|برمج تطبيق|اريد بناء تطبيق|build app|create app)/i;
+const GEN_IMAGE_REGEX = /(?:افتح (?:صفحه|استوديو|قسم) (?:ال)?صور|توليد (?:ال)?صور(?:ه)?|انشاء (?:لي )?صور(?:ه)?|صمم (?:لي )?صور(?:ه)?|ارسم (?:لي )?صور(?:ه)?|generate image)/i;
+const CREATE_GAME_REGEX = /(?:افتح (?:صفحه|استوديو) (?:ال)?(?:العاب|لعب[هة])|اصنع لعب[هة]|انشاء لعب[هة]|برمج لعب[هة]|create game)/i;
+const CREATE_MEDIA_REGEX = /(?:افتح (?:صفحه|استوديو) (?:ال)?(?:فيديو|فديو|وسائط)|انشاء (?:فيديو|فديو)|استوديو (?:فيديو|فديو)|video studio)/i;
 const CONNECT_GITHUB_REGEX = /(?:افتح (?:صفحه )?(?:جيت|كيت)\s*هب|ربط (?:جيت|كيت)\s*هب|اربط (?:جيت|كيت)\s*هب|github)/i;
 const CONNECT_SUPABASE_REGEX = /(?:افتح (?:صفحه )?سوبابيس|ربط سوبابيس|اربط سوبابيس|supabase)/i;
 const LINK_KERNEL_REGEX = /(?:اربط (?:ال)?نوا[هة]|ربط (?:ال)?نوا[هة]|نربط (?:ال)?نوا[هة]|اختر (?:ملف )?(?:ال)?نوا[هة]|ملف (?:ال)?نوا[هة]|link kernel)/i;
@@ -202,7 +202,7 @@ export async function parseUtterance(utterance: string): Promise<IntentResult> {
     confidence: 0.85,
     parameters: { target: 'general', raw_utterance: clean },
     ui_action: 'ROUTE_PREDEFINED',
-    assistant_response: `أدركت النواة طلبك: "${clean}". تفضل بإعطاء أمر لبناء تطبيق أو صورة أو لعبة أو تعليم النواة.`,
+    assistant_response: 'أهلاً بك، أنا أستمع إليك وجاهز للإجابة وتنفيذ أي أمر بكل سرور.',
     voice_spoken_text: 'أنا أستمع إليك، تفضل بأمرك.',
   };
 
