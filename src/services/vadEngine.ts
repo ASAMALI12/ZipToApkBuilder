@@ -55,19 +55,19 @@ export class SileroStyleVAD {
     // 300ms buffer calculation: 300ms / 32ms ≈ 9.4 -> 10 frames = 320ms
     const framesFor300ms = Math.max(9, Math.ceil(300 / msPerFrame));
 
-    // Silence duration between 600ms and 800ms -> 700ms
-    const silenceDurationMs = customConfig?.silenceDurationMs ?? 700;
-    const calculatedHangover = Math.max(18, Math.min(26, Math.round(silenceDurationMs / msPerFrame)));
+    // Instant Endpoint Detection: 300ms silence duration for snappy sentence completion
+    const silenceDurationMs = customConfig?.silenceDurationMs ?? 300;
+    const calculatedHangover = Math.max(8, Math.min(10, Math.round(silenceDurationMs / msPerFrame)));
 
     this.config = {
       sampleRate,
       frameSize,
-      speechThresholdMultiplier: 1.8,
-      speechThreshold: 0.012,
-      positiveSpeechThreshold: 0.45, // 0.4 - 0.5: smooth, less sensitive to abrupt cutoffs
+      speechThresholdMultiplier: 1.25,
+      speechThreshold: 0.0035, // Low threshold ensures capture on first attempt even with quiet voice/mic
+      positiveSpeechThreshold: 0.22, // Highly responsive speech confidence
       silenceDurationMs,
       hangoverFrames: customConfig?.hangoverFrames ?? calculatedHangover,
-      minSpeechFrames: customConfig?.minSpeechFrames ?? 5, // Raised to 5 (~160ms) to prevent hesitations being treated as sentence ends
+      minSpeechFrames: customConfig?.minSpeechFrames ?? 2, // 2 frames (~64ms) for instant first-word capture
       preRollFrames: customConfig?.preRollFrames ?? framesFor300ms, // 300ms buffer before speech
       postRollFrames: customConfig?.postRollFrames ?? framesFor300ms, // 300ms buffer after speech
       ...customConfig,
@@ -107,54 +107,43 @@ export class SileroStyleVAD {
     const len = frame16k.length;
     if (len === 0) return { isSpeech: false, energy: 0 };
 
+    // Calculate true audio RMS energy directly across the 16kHz audio frame
+    // This avoids artificial filter attenuation that previously suppressed vowel sounds
     let sumSquares = 0;
-
-    // Apply 80Hz single-pole highpass + pre-emphasis filter to isolate speech formants
     for (let i = 0; i < len; i++) {
       const x = frame16k[i];
-
-      // Single pole highpass filter at ~80Hz: y[n] = x[n] - x[n-1] + 0.97 * y[n-1]
-      const hp = x - this.prevHpX + 0.97 * this.prevHpY;
-      this.prevHpX = x;
-      this.prevHpY = hp;
-
-      // Pre-emphasis for consonants: pe = hp - 0.92 * prev
-      const pe = hp - 0.92 * this.prevSample;
-      this.prevSample = hp;
-
-      sumSquares += pe * pe;
+      sumSquares += x * x;
     }
 
     const rms = Math.sqrt(sumSquares / len);
 
     // Adaptive noise floor tracking during silence
     if (this.state === 'SILENCE') {
-      if (rms < this.noiseFloor * 1.8) {
-        this.noiseFloor = this.noiseFloor * 0.96 + rms * 0.04;
+      if (rms < this.noiseFloor * 1.5) {
+        this.noiseFloor = this.noiseFloor * 0.95 + rms * 0.05;
       } else if (rms < this.noiseFloor) {
         this.noiseFloor = rms;
       }
-      this.noiseFloor = Math.max(0.002, Math.min(0.035, this.noiseFloor));
+      this.noiseFloor = Math.max(0.001, Math.min(0.010, this.noiseFloor));
     }
 
     // Speech confidence score normalized between 0.0 and 1.0
-    // Scales dynamically relative to ambient noise floor
     const speechConfidence = Math.min(
       1.0,
-      Math.max(0.0, (rms - this.noiseFloor) / Math.max(0.015, this.noiseFloor * 2.2))
+      Math.max(0.0, (rms - this.noiseFloor) / 0.015)
     );
 
-    // Dynamic threshold with hysteresis
+    // Dynamic threshold with hysteresis: sensitive to normal and quiet speaking levels
     const dynamicThreshold = Math.max(
       this.config.speechThreshold,
       this.noiseFloor * this.config.speechThresholdMultiplier
     );
 
-    // Voiced determination: uses positiveSpeechThreshold (0.4 - 0.5) to prevent abrupt cutoffs
+    // Voiced determination: triggers reliably on first syllable
     const isVoiced =
       speechConfidence >= this.config.positiveSpeechThreshold ||
       rms >= dynamicThreshold ||
-      (this.state === 'SPEAKING' && rms >= this.noiseFloor * 1.25); // Hysteresis: keep speaking alive through micro-pauses
+      (this.state === 'SPEAKING' && rms >= this.noiseFloor * 1.2);
 
     if (isVoiced) {
       this.consecutiveSpeechFrames++;

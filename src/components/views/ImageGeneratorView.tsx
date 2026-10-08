@@ -15,13 +15,31 @@ export const ImageGeneratorView: React.FC<ImageGeneratorViewProps> = ({ onBackTo
   const [prompt, setPrompt] = useState('شاشة مستقبلية مضيئة للذكاء الاصطناعي مع دوائر نيون زرقاء');
   const [aspectRatio, setAspectRatio] = useState('1:1');
   const [isGenerating, setIsGenerating] = useState(false);
-  const [currentImage, setCurrentImage] = useState<string | null>(
-    'https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=800&auto=format&fit=crop&q=80'
-  );
+  const [generationNotice, setGenerationNotice] = useState<string | null>(null);
+  const [currentImage, setCurrentImage] = useState<string | null>(() => {
+    // Elegant Cyberpunk Vector Initial Canvas
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="600" height="600" viewBox="0 0 600 600">
+      <defs>
+        <radialGradient id="g" cx="50%" cy="50%" r="60%">
+          <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.8"/>
+          <stop offset="50%" stop-color="#06b6d4" stop-opacity="0.5"/>
+          <stop offset="100%" stop-color="#090d16" stop-opacity="0.1"/>
+        </radialGradient>
+      </defs>
+      <rect width="600" height="600" fill="#030712"/>
+      <circle cx="300" cy="300" r="180" fill="url(#g)"/>
+      <circle cx="300" cy="300" r="230" fill="none" stroke="#38bdf8" stroke-width="1.5" stroke-dasharray="6,8" opacity="0.4"/>
+      <path d="M150 300 L450 300 M300 150 L300 450" stroke="#00f5d4" stroke-width="1.5" opacity="0.5"/>
+      <text x="300" y="295" text-anchor="middle" fill="#ffffff" font-family="system-ui, sans-serif" font-size="16" font-weight="bold">THE KERNEL SYNTH STUDIO</text>
+      <text x="300" y="325" text-anchor="middle" fill="#38bdf8" font-family="monospace" font-size="12">جاهز لتوليد التصاميم والصور الذكية</text>
+    </svg>`;
+    return `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(svg)))}`;
+  });
 
   const handleGenerate = async () => {
     if (!prompt.trim() || isGenerating) return;
     setIsGenerating(true);
+    setGenerationNotice(null);
 
     try {
       const res = await fetch('/api/media/generate-image', {
@@ -34,10 +52,13 @@ export const ImageGeneratorView: React.FC<ImageGeneratorViewProps> = ({ onBackTo
         const data = await res.json();
         if (data.imageUrl) {
           setCurrentImage(data.imageUrl);
+          if (data.notice) {
+            setGenerationNotice(data.notice);
+          }
         }
       }
     } catch (err) {
-      console.error(err);
+      console.warn('[ImageGenerator] Generate notice:', err);
     } finally {
       setIsGenerating(false);
     }
@@ -129,7 +150,17 @@ export const ImageGeneratorView: React.FC<ImageGeneratorViewProps> = ({ onBackTo
         <div className="bg-slate-900/40 border border-slate-800 rounded-3xl p-4 flex flex-col items-center justify-center">
           {currentImage ? (
             <div className="w-full rounded-2xl overflow-hidden border border-slate-800 bg-slate-950 flex flex-col items-center">
-              <img src={currentImage} alt="Generated" className="w-full max-h-80 object-contain rounded-xl" />
+              <img
+                src={currentImage}
+                alt="Generated"
+                referrerPolicy="no-referrer"
+                className="w-full max-h-80 object-contain rounded-xl"
+              />
+              {generationNotice && (
+                <div className="w-full px-3 py-2 bg-purple-950/40 border-t border-purple-500/30 text-[11px] text-purple-200 text-center">
+                  {generationNotice}
+                </div>
+              )}
               <div className="w-full p-3 flex items-center justify-between border-t border-slate-800">
                 <span className="text-[10px] text-slate-500 font-mono">نسبة العرض: {aspectRatio}</span>
                 <button

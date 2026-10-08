@@ -2,6 +2,7 @@ import { CallStatus, AudioEngineMetrics, IntentResult } from '../types/kernel';
 import { SileroStyleVAD } from './vadEngine';
 import { StreamingAudioPlayer } from './streamingAudioPlayer';
 import { StorageEngine } from './storageEngine';
+import { parseUtterance, checkQuickIntent } from './intentParser';
 
 type StatusListener = (status: CallStatus) => void;
 type TranscriptListener = (text: string, isFinal: boolean) => void;
@@ -13,7 +14,7 @@ type ErrorListener = (errorMsg: string) => void;
 export type AudioCallMode = 'CONTINUOUS' | 'TAP_TO_TALK';
 
 /**
- * Universal 16-bit PCM WAV Encoder
+ * Universal 16-bit PCM WAV Encoder (Blob)
  */
 function encodeWAV(samples: Float32Array, sampleRate: number = 16000): Blob {
   const buffer = new ArrayBuffer(44 + samples.length * 2);
@@ -44,6 +45,42 @@ function encodeWAV(samples: Float32Array, sampleRate: number = 16000): Blob {
   }
 
   return new Blob([buffer], { type: 'audio/wav' });
+}
+
+/**
+ * Ultra-Fast Direct Base64 WAV Encoder (Zero-Latency, No FileReader)
+ */
+function encodeWAVBase64(samples: Float32Array, sampleRate: number = 16000): string {
+  const buffer = new ArrayBuffer(44 + samples.length * 2);
+  const view = new DataView(buffer);
+
+  view.setUint32(0, 0x52494646, false); // "RIFF"
+  view.setUint32(4, 36 + samples.length * 2, true);
+  view.setUint32(8, 0x57415645, false); // "WAVE"
+  view.setUint32(12, 0x666d7420, false); // "fmt "
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  view.setUint32(36, 0x64617461, false); // "data"
+  view.setUint32(40, samples.length * 2, true);
+
+  let offset = 44;
+  for (let i = 0; i < samples.length; i++, offset += 2) {
+    const s = Math.max(-1, Math.min(1, samples[i]));
+    view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+  }
+
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  const len = bytes.byteLength;
+  for (let i = 0; i < len; i += 8192) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, Math.min(i + 8192, len)) as any);
+  }
+  return btoa(binary);
 }
 
 function floatTo16BitPCM(samples: Float32Array): ArrayBuffer {
@@ -104,18 +141,29 @@ class AudioEngine {
   private currentMicEnergy: number = 0;
   private currentOutputEnergy: number = 0;
 
+  // Echo guard & Speech Synthesis Deduplication
+  private aiSpeakingStartTime: number = 0;
+  private lastSpokenText: string = '';
+  private lastSpokenTimestamp: number = 0;
+
+  // Native Browser Speech Recognition Engine (0ms Arabic stream)
+  private speechRecognizer: any = null;
+  private currentLiveTranscript: string = '';
+  private lastProcessedUtterance: string = '';
+  private lastProcessedTimestamp: number = 0;
+
   private constructor() {
     this.vad = new SileroStyleVAD({
       sampleRate: 16000,
       frameSize: 512, // 32ms at 16kHz
-      speechThresholdMultiplier: 1.8,
-      speechThreshold: 0.012,
-      positiveSpeechThreshold: 0.45, // 0.4 - 0.5: smooth, less sensitive to abrupt cutoff
-      silenceDurationMs: 700, // 600ms - 800ms
-      hangoverFrames: 22, // ~704ms
-      minSpeechFrames: 5, // ~160ms: prevents short hesitations from being treated as sentence ends
+      speechThresholdMultiplier: 1.25,
+      speechThreshold: 0.0035, // Sensitive capture on first attempt even with quiet voice/mic
+      positiveSpeechThreshold: 0.22, // Highly responsive speech confidence
+      silenceDurationMs: 300, // 300ms silence for instant Endpoint Detection!
+      hangoverFrames: 9, // ~288ms
+      minSpeechFrames: 2, // ~64ms: catches the very first syllable on the first attempt
       preRollFrames: 10, // 300ms pre-roll buffer to preserve first letter/syllable
-      postRollFrames: 10, // 300ms post-roll buffer to preserve last letter/syllable
+      postRollFrames: 8, // ~256ms post-roll buffer
     });
 
     this.player = new StreamingAudioPlayer();
@@ -133,7 +181,7 @@ class AudioEngine {
   }
 
   /**
-   * Configures local Silero VAD events
+   * Configures local Silero VAD events with Instant Endpoint Detection
    */
   private setupVadCallbacks() {
     // 1. Speech just started (with pre-roll preserved)
@@ -160,12 +208,23 @@ class AudioEngine {
       this.streamBinaryChunkToWs(frame);
     };
 
-    // 3. User finished speaking (hangover elapsed)
+    // 3. User finished speaking (Instant Endpoint Detection: sentence boundary reached!)
     this.vad.onSpeechEnd = () => {
       if (this.callStatus !== 'LISTENING' || this.isProcessingAudio) return;
 
       // In TAP_TO_TALK mode, user controls when to stop by tapping
       if (this.callMode === 'TAP_TO_TALK') return;
+
+      // Endpoint Detection Trigger:
+      // If we have recognized text from live speech stream, commit immediately without delay!
+      if (this.currentLiveTranscript && this.currentLiveTranscript.trim().length > 0) {
+        const textToCommit = this.currentLiveTranscript.trim();
+        this.currentLiveTranscript = '';
+        this.recorded16kChunks = [];
+        this.vad.reset();
+        this.handleDirectTextUtterance(textToCommit);
+        return;
+      }
 
       this.commitCurrentUtterance();
     };
@@ -175,10 +234,14 @@ class AudioEngine {
       this.currentMicEnergy = Math.min(1.0, energy * 12);
       this.notifyEnergy(this.currentMicEnergy, this.currentOutputEnergy);
 
-      // Full-Duplex Barge-In Interruption:
-      // If AI is speaking and user speaks firmly, immediately interrupt!
-      if (this.callStatus === 'SPEAKING' && isSpeech && this.currentMicEnergy > 0.12) {
-        this.triggerBargeIn();
+      // Full-Duplex Barge-In Interruption with Echo Guard:
+      // Prevent speaker audio feedback from instantly killing the AI's own voice!
+      if (this.callStatus === 'SPEAKING' && isSpeech) {
+        const timeSinceSpeechStart = Date.now() - this.aiSpeakingStartTime;
+        // Grace period of 2500ms + requires loud intentional voice (> 0.75) to barge in
+        if (timeSinceSpeechStart > 2500 && this.currentMicEnergy > 0.75) {
+          this.triggerBargeIn();
+        }
       }
     };
   }
@@ -188,6 +251,7 @@ class AudioEngine {
    */
   private setupPlayerCallbacks() {
     this.player.onPlaybackStart = () => {
+      this.aiSpeakingStartTime = Date.now();
       this.setStatus('SPEAKING');
     };
 
@@ -382,10 +446,10 @@ class AudioEngine {
 
       this.micStream = await navigator.mediaDevices.getUserMedia(constraints);
     } catch (err: any) {
-      console.error('[AudioEngine] Mic permission failed:', err);
+      console.warn('[AudioEngine] Mic permission status:', err?.name || err?.message || 'Access denied');
       this.setStatus('IDLE');
-      this.notifyError('يرجى السماح بالوصول إلى الميكروفون في المتصفح للبدء.');
-      throw err;
+      this.notifyError('يرجى السماح بالوصول إلى الميكروفون في المتصفح للبدء، أو الاستمرار بالنقر على الأوامر السريعة أدناه.');
+      return;
     }
 
     // 3. Audio DSP Graph: Filters, Spectrum Analyser, and Resampling Capture Node
@@ -439,6 +503,67 @@ class AudioEngine {
     // Ensure WebSocket is open
     if (!this.isWsConnected || !this.ws || this.ws.readyState !== WebSocket.OPEN) {
       this.initWebSocket();
+    }
+
+    // 4. Native Browser Speech Recognition Engine (0ms Arabic stream)
+    if (typeof window !== 'undefined' && ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window)) {
+      try {
+        const SpeechRec = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+        this.speechRecognizer = new SpeechRec();
+        this.speechRecognizer.continuous = true;
+        this.speechRecognizer.interimResults = true;
+        this.speechRecognizer.lang = 'ar-SA';
+
+        this.speechRecognizer.onresult = (event: any) => {
+          let interim = '';
+          let finalUtterance = '';
+          for (let i = event.resultIndex; i < event.results.length; ++i) {
+            const transcript = event.results[i][0]?.transcript || '';
+            if (event.results[i].isFinal) {
+              finalUtterance += transcript;
+            } else {
+              interim += transcript;
+            }
+          }
+
+          const displayText = finalUtterance.trim() || interim.trim();
+          if (displayText) {
+            this.currentLiveTranscript = displayText;
+            this.notifyTranscript(displayText, Boolean(finalUtterance.trim()));
+
+            // Streaming Early Intent Match (0ms):
+            // Check if user already voiced an explicit command in interim speech!
+            const quickMatch = checkQuickIntent(displayText);
+            if (quickMatch) {
+              this.currentLiveTranscript = '';
+              this.handleDirectTextUtterance(displayText);
+              return;
+            }
+          }
+
+          if (finalUtterance.trim()) {
+            const finalClean = finalUtterance.trim();
+            this.currentLiveTranscript = '';
+            this.handleDirectTextUtterance(finalClean);
+          }
+        };
+
+        this.speechRecognizer.onerror = (e: any) => {
+          console.warn('[AudioEngine] Speech rec event:', e?.error);
+        };
+
+        this.speechRecognizer.onend = () => {
+          if (this.callStatus === 'LISTENING') {
+            try { this.speechRecognizer?.start(); } catch {}
+          }
+        };
+
+        try {
+          this.speechRecognizer.start();
+        } catch {}
+      } catch (e) {
+        console.warn('[AudioEngine] Speech rec init notice:', e);
+      }
     }
 
     this.setStatus('LISTENING');
@@ -553,7 +678,85 @@ class AudioEngine {
     this.recorded16kChunks = [];
     this.isProcessingAudio = false;
 
+    if (this.speechRecognizer) {
+      try {
+        this.speechRecognizer.onresult = null;
+        this.speechRecognizer.onend = null;
+        this.speechRecognizer.onerror = null;
+        this.speechRecognizer.stop();
+      } catch {}
+      this.speechRecognizer = null;
+    }
+    this.currentLiveTranscript = '';
+
     this.setStatus('IDLE');
+  }
+
+  /**
+   * High-speed direct text utterance handling:
+   * 1. Evaluates Tier 1 local fast-path regex (0ms instantaneous execution)
+   * 2. If general query, sends fast text-only NLU request to server (~200ms)
+   * Completely bypasses heavy audio transcoding and wait times!
+   */
+  public async handleDirectTextUtterance(text: string): Promise<void> {
+    const cleanText = text.trim();
+    if (!cleanText || this.isProcessingAudio) return;
+
+    // Fast deduplication guard: prevent double-executing the same phrase within 1.5s
+    const now = Date.now();
+    if (cleanText === this.lastProcessedUtterance && now - this.lastProcessedTimestamp < 1500) {
+      return;
+    }
+    this.lastProcessedUtterance = cleanText;
+    this.lastProcessedTimestamp = now;
+
+    this.isProcessingAudio = true;
+    this.setStatus('THINKING');
+
+    try {
+      // 1. Tier 1 Fast Local Pattern Match: 0ms instantaneous response!
+      const localResult = await parseUtterance(cleanText);
+      if (localResult.intent !== 'INTENT_GENERAL_QUERY') {
+        this.isProcessingAudio = false;
+        this.notifyTranscript(cleanText, true);
+        this.notifyResult(localResult);
+        if (localResult.voice_spoken_text) {
+          this.playFallbackSpeech(localResult.voice_spoken_text);
+        }
+        return;
+      }
+
+      // 2. High-speed text NLU endpoint (0 audio latency, ~200ms)
+      const response = await fetch('/api/nlu/parse-intent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ utterance: cleanText }),
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        this.isProcessingAudio = false;
+        this.notifyTranscript(cleanText, true);
+        this.notifyResult({
+          intent: data.intent || 'INTENT_GENERAL_QUERY',
+          confidence: data.confidence || 0.95,
+          parameters: data.parameters || { raw_utterance: cleanText },
+          ui_action: data.ui_action || 'ROUTE_PREDEFINED',
+          assistant_response: data.assistant_response || '',
+          voice_spoken_text: data.voice_spoken_text || '',
+        });
+        if (data.voice_spoken_text) {
+          this.playFallbackSpeech(data.voice_spoken_text);
+        }
+        return;
+      }
+    } catch (err) {
+      console.warn('[AudioEngine] Fast direct text error, recovering:', err);
+    } finally {
+      if (this.callStatus === 'THINKING') {
+        this.resetToListening();
+      }
+    }
   }
 
   /**
@@ -564,9 +767,19 @@ class AudioEngine {
   public async commitCurrentUtterance(): Promise<void> {
     if (this.isProcessingAudio) return;
 
-    // Minimum utterance length validation (~200ms = 3200 samples at 16kHz)
+    // If native speech engine already captured the words, run immediately in 0ms!
+    if (this.currentLiveTranscript && this.currentLiveTranscript.trim().length > 1) {
+      const textToRun = this.currentLiveTranscript.trim();
+      this.currentLiveTranscript = '';
+      this.recorded16kChunks = [];
+      this.vad.reset();
+      await this.handleDirectTextUtterance(textToRun);
+      return;
+    }
+
+    // Minimum utterance length validation (~100ms = 1600 samples at 16kHz)
     const totalSamples = this.recorded16kChunks.reduce((acc, c) => acc + c.length, 0);
-    if (totalSamples < 3200) {
+    if (totalSamples < 1600) {
       this.recorded16kChunks = [];
       this.vad.reset();
       return;
@@ -575,7 +788,7 @@ class AudioEngine {
     this.isProcessingAudio = true;
     this.setStatus('THINKING');
 
-    // Encode audio to base64 immediately
+    // Encode audio to base64 synchronously (0ms latency, bypass FileReader)
     const mergedSamples = new Float32Array(totalSamples);
     let offset = 0;
     for (const chunk of this.recorded16kChunks) {
@@ -584,22 +797,8 @@ class AudioEngine {
     }
     this.recorded16kChunks = [];
 
-    const wavBlob = encodeWAV(mergedSamples, 16000);
-    const reader = new FileReader();
-    const base64Promise = new Promise<string>((resolve, reject) => {
-      reader.onloadend = () => {
-        const res = (reader.result as string)?.split(',')[1];
-        if (res) resolve(res);
-        else reject(new Error('Failed to encode WAV'));
-      };
-      reader.onerror = reject;
-    });
-    reader.readAsDataURL(wavBlob);
-
-    let base64Audio = '';
-    try {
-      base64Audio = await base64Promise;
-    } catch {
+    const base64Audio = encodeWAVBase64(mergedSamples, 16000);
+    if (!base64Audio || base64Audio.length < 300) {
       this.isProcessingAudio = false;
       this.setStatus('LISTENING');
       return;
@@ -701,24 +900,96 @@ class AudioEngine {
   }
 
   /**
-   * Browser SpeechSynthesis fallback with natural Arabic voice
+   * Generates a high-tech synthesized acoustic chime via Web Audio API
+   * Guarantees audible feedback even if speech synthesis is disabled or muted.
+   */
+  public playConfirmationChime(): void {
+    try {
+      const AudioCtxClass = window.AudioContext || (window as any).webkitAudioContext;
+      if (!this.audioCtx || this.audioCtx.state === 'closed') {
+        this.audioCtx = new AudioCtxClass();
+      }
+      if (this.audioCtx.state === 'suspended') {
+        this.audioCtx.resume().catch(() => {});
+      }
+      const ctx = this.audioCtx;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(587.33, ctx.currentTime); // D5
+      osc.frequency.exponentialRampToValueAtTime(880, ctx.currentTime + 0.12); // A5
+      gain.gain.setValueAtTime(0.08, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.28);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.3);
+    } catch {}
+  }
+
+  /**
+   * Browser SpeechSynthesis fallback with natural Arabic voice,
+   * acoustic confirmation chime, and robust Chrome/Safari resume handling.
    */
   public playFallbackSpeech(text: string): Promise<void> {
+    if (!text || !text.trim()) return Promise.resolve();
+
+    // Deduplication guard: ignore identical utterances triggered within 2.5s
+    const now = Date.now();
+    if (text === this.lastSpokenText && now - this.lastSpokenTimestamp < 2500) {
+      return Promise.resolve();
+    }
+    this.lastSpokenText = text;
+    this.lastSpokenTimestamp = now;
+
+    // 1. Play immediate audible confirmation chime
+    this.playConfirmationChime();
+
     return new Promise((resolve) => {
-      if (!window.speechSynthesis || this.callStatus === 'IDLE' || this.callStatus === 'STOPPING') {
+      if (typeof window === 'undefined' || !window.speechSynthesis) {
         resolve();
         return;
       }
 
+      const prevStatus = this.callStatus;
       this.setStatus('SPEAKING');
+      this.aiSpeakingStartTime = Date.now();
 
-      window.speechSynthesis.cancel();
+      // Workaround for Chrome bug: resume synthesis if paused
+      try {
+        if (window.speechSynthesis.paused) {
+          window.speechSynthesis.resume();
+        }
+      } catch {}
+
       const utterance = new SpeechSynthesisUtterance(text);
-      utterance.lang = 'ar-SA';
       utterance.rate = 1.0;
+      utterance.pitch = 1.0;
 
-      utterance.onend = () => {
-        // Automatically resume AudioContext and reactivate microphone
+      // Select available Arabic voice
+      try {
+        const voices = window.speechSynthesis.getVoices();
+        const arVoice = voices.find(
+          (v) =>
+            v.lang.startsWith('ar') ||
+            v.lang.toLowerCase().includes('arabic') ||
+            v.name.toLowerCase().includes('arabic')
+        );
+        if (arVoice) {
+          utterance.voice = arVoice;
+          utterance.lang = arVoice.lang;
+        } else {
+          utterance.lang = 'ar-SA';
+        }
+      } catch {
+        utterance.lang = 'ar-SA';
+      }
+
+      let isFinished = false;
+      const finishSpeech = () => {
+        if (isFinished) return;
+        isFinished = true;
+
         if (this.audioCtx && this.audioCtx.state === 'suspended') {
           this.audioCtx.resume().catch(() => {});
         }
@@ -726,27 +997,34 @@ class AudioEngine {
         this.recorded16kChunks = [];
         this.vad.reset();
 
-        if (this.callStatus !== 'IDLE' && this.callStatus !== 'STOPPING') {
+        if (prevStatus !== 'IDLE' && prevStatus !== 'STOPPING') {
           this.setStatus('LISTENING');
+        } else {
+          this.setStatus('IDLE');
         }
         resolve();
       };
 
-      utterance.onerror = () => {
-        if (this.audioCtx && this.audioCtx.state === 'suspended') {
-          this.audioCtx.resume().catch(() => {});
-        }
-        this.isProcessingAudio = false;
-        this.recorded16kChunks = [];
-        this.vad.reset();
-
-        if (this.callStatus !== 'IDLE' && this.callStatus !== 'STOPPING') {
-          this.setStatus('LISTENING');
-        }
-        resolve();
+      utterance.onend = finishSpeech;
+      utterance.onerror = (e) => {
+        console.warn('[AudioEngine] Speech synthesis notification:', e);
+        finishSpeech();
       };
 
-      window.speechSynthesis.speak(utterance);
+      // Mobile Safari / Chrome safeguard timeout
+      const maxDuration = Math.max(2500, text.length * 110);
+      setTimeout(() => {
+        if (!isFinished && this.callStatus === 'SPEAKING') {
+          finishSpeech();
+        }
+      }, maxDuration);
+
+      try {
+        window.speechSynthesis.speak(utterance);
+      } catch (err) {
+        console.warn('[AudioEngine] Speak failed:', err);
+        finishSpeech();
+      }
     });
   }
 

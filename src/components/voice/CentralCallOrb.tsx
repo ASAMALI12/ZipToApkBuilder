@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { audioEngine, AudioCallMode } from '../../services/audioEngine';
+import { audioEngine } from '../../services/audioEngine';
 import { CallStatus, BoundKernel } from '../../types/kernel';
 import {
   Mic,
@@ -9,9 +9,7 @@ import {
   Sparkles,
   Cpu,
   AlertTriangle,
-  Radio,
-  SlidersHorizontal,
-  FolderOpen,
+  Send,
   PhoneOff,
 } from 'lucide-react';
 
@@ -20,6 +18,9 @@ interface CentralCallOrbProps {
   currentTranscript?: string;
   isInterimTranscript?: boolean;
   boundKernel: BoundKernel | null;
+  lastAssistantResponse?: string;
+  activeActionNotice?: { name: string; workspace: string } | null;
+  onOpenWorkspace?: (workspace: string) => void;
 }
 
 export const CentralCallOrb: React.FC<CentralCallOrbProps> = ({
@@ -27,16 +28,15 @@ export const CentralCallOrb: React.FC<CentralCallOrbProps> = ({
   currentTranscript,
   isInterimTranscript,
   boundKernel,
+  lastAssistantResponse,
+  activeActionNotice,
+  onOpenWorkspace,
 }) => {
   const [callStatus, setCallStatus] = useState<CallStatus>(audioEngine.getStatus());
   const [micEnergy, setMicEnergy] = useState<number>(0);
   const [outputEnergy, setOutputEnergy] = useState<number>(0);
   const [permissionError, setPermissionError] = useState<string | null>(null);
-  const [callMode, setCallMode] = useState<AudioCallMode>(audioEngine.getCallMode());
-  const [sensitivity, setSensitivity] = useState<'HIGH' | 'NORMAL' | 'NOISE_ISOLATION'>(
-    audioEngine.getSensitivity()
-  );
-  const [showSettings, setShowSettings] = useState<boolean>(false);
+  const [chatInput, setChatInput] = useState<string>('');
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
@@ -132,22 +132,13 @@ export const CentralCallOrb: React.FC<CentralCallOrbProps> = ({
       if (callStatus === 'IDLE') {
         await audioEngine.safeStartMicrophone();
       } else if (callStatus === 'LISTENING') {
-        // In TAP_TO_TALK or if user taps while listening, commit speech immediately!
         await audioEngine.commitCurrentUtterance();
       } else if (callStatus === 'THINKING') {
-        // Immediate safety abort if tapped during thinking
         audioEngine.resetToListening();
       }
     } catch (err: any) {
-      console.error('[CentralCallOrb] Call toggle error:', err);
-      setPermissionError('يرجى السماح بالوصول إلى الميكروفون من إعدادات المتصفح.');
-    } finally {
-      // Ensure state is always safely returned to IDLE or LISTENING, never stuck in THINKING
-      setTimeout(() => {
-        if (audioEngine.getStatus() === 'THINKING') {
-          audioEngine.resetToListening();
-        }
-      }, 350);
+      console.warn('[CentralCallOrb] Call toggle status:', err?.name || err?.message || 'Permission denied');
+      setPermissionError('يرجى السماح بالوصول إلى الميكروفون من إعدادات المتصفح، أو الكتابة في مربع الحوار بالأسفل.');
     }
   };
 
@@ -155,122 +146,32 @@ export const CentralCallOrb: React.FC<CentralCallOrbProps> = ({
     audioEngine.safeStopMicrophone();
   };
 
-  const handleModeChange = (mode: AudioCallMode) => {
-    setCallMode(mode);
-    audioEngine.setCallMode(mode);
-  };
+  const handleSendChat = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!chatInput.trim()) return;
 
-  const handleSensitivityChange = (level: 'HIGH' | 'NORMAL' | 'NOISE_ISOLATION') => {
-    setSensitivity(level);
-    audioEngine.setSensitivity(level);
+    onQuickIntent(chatInput.trim());
+    setChatInput('');
   };
 
   return (
-    <div className="relative flex-1 flex flex-col items-center justify-between min-h-[88vh] px-4 py-6 select-none font-arabic">
-      {/* Top Kernel Status Bar (Minimalist) */}
-      <div className="w-full max-w-md flex items-center justify-between pt-2 z-20">
-        <button
-          onClick={() => onQuickIntent('دعنا نربط النوات')}
-          className={`flex items-center gap-2 px-3.5 py-1.5 rounded-full border text-xs transition-all cursor-pointer ${
-            boundKernel
-              ? 'bg-emerald-950/50 border-emerald-500/30 text-emerald-300 shadow-sm'
-              : 'bg-slate-900/60 hover:bg-slate-800/80 border-slate-800 text-slate-400 hover:text-slate-200'
-          }`}
-          title="ربط ملف النواة من الهاتف"
-        >
-          <Cpu className={`w-3.5 h-3.5 ${boundKernel ? 'text-emerald-400' : 'text-cyan-400'}`} />
-          {boundKernel ? (
-            <span className="truncate max-w-[200px]">
-              النواة: <strong>{boundKernel.name}</strong>
-            </span>
-          ) : (
-            <span className="flex items-center gap-1.5">
-              <span>ربط النواة</span>
-              <FolderOpen className="w-3 h-3 text-cyan-400" />
-            </span>
-          )}
-        </button>
-
-        {/* Audio Mode / Filter Settings Button */}
-        <button
-          onClick={() => setShowSettings(!showSettings)}
-          className={`p-1.5 rounded-full border transition-all cursor-pointer ${
-            showSettings
-              ? 'bg-cyan-950 border-cyan-500/50 text-cyan-300'
-              : 'bg-slate-900/60 border-slate-800 text-slate-400 hover:text-slate-200'
-          }`}
-          title="إعدادات اللاقط وعزل الضوضاء"
-        >
-          <SlidersHorizontal className="w-3.5 h-3.5" />
-        </button>
-      </div>
-
-      {/* Audio Settings Dropdown */}
-      {showSettings && (
-        <div className="w-full max-w-sm bg-slate-900/95 backdrop-blur-xl border border-slate-800 rounded-2xl p-4 my-2 z-30 shadow-2xl space-y-3 animate-in fade-in zoom-in-95 duration-200 text-right">
-          <div>
-            <span className="text-xs text-slate-400 block mb-1.5">نمط المكالمة:</span>
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                onClick={() => handleModeChange('CONTINUOUS')}
-                className={`py-1.5 px-2 text-xs rounded-xl border transition-all cursor-pointer ${
-                  callMode === 'CONTINUOUS'
-                    ? 'bg-cyan-950 border-cyan-500 text-cyan-200'
-                    : 'bg-slate-950 border-slate-800 text-slate-400 hover:bg-slate-800'
-                }`}
-              >
-                مكالمة مستمرة
-              </button>
-              <button
-                onClick={() => handleModeChange('TAP_TO_TALK')}
-                className={`py-1.5 px-2 text-xs rounded-xl border transition-all cursor-pointer ${
-                  callMode === 'TAP_TO_TALK'
-                    ? 'bg-cyan-950 border-cyan-500 text-cyan-200'
-                    : 'bg-slate-950 border-slate-800 text-slate-400 hover:bg-slate-800'
-                }`}
-              >
-                اضغط للتحدث (للهاتف)
-              </button>
-            </div>
-          </div>
-
-          <div>
-            <span className="text-xs text-slate-400 block mb-1.5">عزل الضوضاء وحساسية المايك:</span>
-            <div className="grid grid-cols-3 gap-1.5">
-              <button
-                onClick={() => handleSensitivityChange('HIGH')}
-                className={`py-1 text-[11px] rounded-lg border transition-all cursor-pointer ${
-                  sensitivity === 'HIGH'
-                    ? 'bg-emerald-950 border-emerald-500 text-emerald-200'
-                    : 'bg-slate-950 border-slate-800 text-slate-400'
-                }`}
-              >
-                لاقط حساس جداً
-              </button>
-              <button
-                onClick={() => handleSensitivityChange('NORMAL')}
-                className={`py-1 text-[11px] rounded-lg border transition-all cursor-pointer ${
-                  sensitivity === 'NORMAL'
-                    ? 'bg-cyan-950 border-cyan-500 text-cyan-200'
-                    : 'bg-slate-950 border-slate-800 text-slate-400'
-                }`}
-              >
-                متوازن
-              </button>
-              <button
-                onClick={() => handleSensitivityChange('NOISE_ISOLATION')}
-                className={`py-1 text-[11px] rounded-lg border transition-all cursor-pointer ${
-                  sensitivity === 'NOISE_ISOLATION'
-                    ? 'bg-purple-950 border-purple-500 text-purple-200'
-                    : 'bg-slate-950 border-slate-800 text-slate-400'
-                }`}
-              >
-                عزل الأصوات الخارجية
-              </button>
-            </div>
-          </div>
+    <div className="relative flex-1 flex flex-col items-center justify-between min-h-[90vh] px-4 py-5 select-none font-arabic">
+      {/* Top Subtle Status Badge */}
+      <div className="w-full max-w-md flex items-center justify-between pt-1 z-20">
+        <div className="flex items-center gap-2 px-3 py-1 bg-slate-900/60 border border-slate-800/80 rounded-full text-xs text-slate-400">
+          <Cpu className="w-3.5 h-3.5 text-cyan-400" />
+          <span>{boundKernel ? boundKernel.name : 'النواة الذاتية المستقلة'}</span>
         </div>
-      )}
+
+        <div className="flex items-center gap-1.5 text-[11px] font-mono text-slate-400">
+          <span className={`w-2 h-2 rounded-full ${
+            callStatus === 'LISTENING' ? 'bg-cyan-400 animate-pulse' :
+            callStatus === 'SPEAKING' ? 'bg-purple-400 animate-ping' :
+            callStatus === 'THINKING' ? 'bg-amber-400' : 'bg-slate-600'
+          }`} />
+          <span>{callStatus === 'LISTENING' ? 'المايك متصل' : callStatus === 'SPEAKING' ? 'تتحدث' : 'جاهز'}</span>
+        </div>
+      </div>
 
       {/* Center Ambient Glow */}
       <div
@@ -285,8 +186,8 @@ export const CentralCallOrb: React.FC<CentralCallOrbProps> = ({
         }`}
       />
 
-      {/* Main Central Voice Call Button (Only element on screen) */}
-      <div className="relative flex flex-col items-center justify-center my-auto z-10">
+      {/* Main Central Voice Call Button (Hero Element) */}
+      <div className="relative flex flex-col items-center justify-center my-auto z-10 w-full max-w-md">
         <div className="relative flex items-center justify-center w-72 h-72">
           {/* Audio Canvas Rings */}
           <canvas
@@ -308,7 +209,7 @@ export const CentralCallOrb: React.FC<CentralCallOrbProps> = ({
                 ? 'bg-gradient-to-b from-rose-950 via-slate-900 to-slate-950 border-2 border-rose-400 shadow-rose-500/50 scale-110'
                 : 'bg-gradient-to-b from-slate-900 to-slate-950 border border-slate-700 hover:border-cyan-500/60 shadow-slate-950 hover:scale-102'
             }`}
-            title="بدء أو إنهاء المكالمة الصوتية مع النواة"
+            title="بدء التحدث بالمايكروفون مع النواة"
           >
             <div className="relative mb-2">
               {callStatus === 'IDLE' ? (
@@ -324,17 +225,11 @@ export const CentralCallOrb: React.FC<CentralCallOrbProps> = ({
 
             <span className="text-xs font-bold tracking-wider transition-colors">
               {callStatus === 'IDLE' && (
-                <span className="text-slate-300 group-hover:text-white">بدء المكالمة</span>
+                <span className="text-slate-300 group-hover:text-white">اضغط للتحدث</span>
               )}
               {callStatus === 'STARTING' && <span className="text-yellow-400">تشغيل المايك...</span>}
-              {callStatus === 'LISTENING' && (
-                <span className="text-cyan-300">
-                  {callMode === 'TAP_TO_TALK' ? 'اضغط للإرسال' : 'أنا أستمع إليك'}
-                </span>
-              )}
-              {callStatus === 'THINKING' && (
-                <span className="text-amber-300 animate-pulse">جاري الفهم...</span>
-              )}
+              {callStatus === 'LISTENING' && <span className="text-cyan-300">أنا أستمع إليك</span>}
+              {callStatus === 'THINKING' && <span className="text-amber-300 animate-pulse">جاري الفهم...</span>}
               {callStatus === 'SPEAKING' && <span className="text-purple-300">النواة تتحدث...</span>}
               {callStatus === 'BARGE_IN' && <span className="text-rose-400">مقاطعة الصوت!</span>}
               {callStatus === 'STOPPING' && <span className="text-yellow-400">إيقاف المايك...</span>}
@@ -343,9 +238,7 @@ export const CentralCallOrb: React.FC<CentralCallOrbProps> = ({
             {/* Live Audio Energy Indicator */}
             {callStatus === 'LISTENING' && (
               <span className="text-[10px] text-cyan-400 font-mono mt-1">
-                {micEnergy > 0.04
-                  ? `يلتقط صوتك: ${Math.round(micEnergy * 100)}%`
-                  : 'تحدث بصوتك الآن...'}
+                {micEnergy > 0.04 ? `التقاط الصوت: ${Math.round(micEnergy * 100)}%` : 'تحدث الآن...'}
               </span>
             )}
           </button>
@@ -355,66 +248,105 @@ export const CentralCallOrb: React.FC<CentralCallOrbProps> = ({
         {callStatus !== 'IDLE' && (
           <button
             onClick={handleEndCall}
-            className="mt-3 px-4 py-1.5 rounded-full bg-rose-950/70 hover:bg-rose-900 border border-rose-500/40 text-rose-300 text-xs flex items-center gap-1.5 transition-all cursor-pointer shadow-lg active:scale-95 z-20"
-            title="إنهاء المكالمة وإغلاق المايك"
+            className="mt-2 px-3.5 py-1 rounded-full bg-rose-950/70 hover:bg-rose-900 border border-rose-500/40 text-rose-300 text-xs flex items-center gap-1.5 transition-all cursor-pointer shadow-lg active:scale-95 z-20"
+            title="إنهاء المكالمة"
           >
-            <PhoneOff className="w-3.5 h-3.5 text-rose-400" />
-            <span>إنهاء المكالمة</span>
+            <PhoneOff className="w-3 h-3 text-rose-400" />
+            <span>إيقاف المايك</span>
           </button>
         )}
 
-        {/* Live Speech Recognition Transcript Pill */}
-        <div className="w-full max-w-md min-h-[44px] px-5 py-2 my-2 bg-slate-900/60 backdrop-blur-md rounded-2xl border border-slate-800/80 shadow-lg flex items-center justify-center text-center">
-          {currentTranscript ? (
-            <div className="flex items-center gap-2">
+        {/* Live Conversation Stream (User Utterance + Kernel Voice Reply) */}
+        <div className="w-full space-y-2.5 my-3">
+          {/* User Utterance Box */}
+          {currentTranscript && (
+            <div className="min-h-[42px] px-4 py-2 bg-slate-900/80 backdrop-blur-md rounded-2xl border border-slate-800 shadow-md flex items-center gap-2 text-right animate-in fade-in duration-200">
               <span className="w-2 h-2 rounded-full bg-cyan-400 animate-ping shrink-0" />
-              <p className="text-sm font-bold text-slate-100 leading-relaxed">
+              <p className="text-xs font-bold text-slate-100 leading-relaxed flex-1">
                 "{currentTranscript}"
                 {isInterimTranscript && <span className="text-cyan-400"> ...</span>}
               </p>
             </div>
-          ) : (
-            <p className="text-xs text-slate-400 font-medium">
-              {callStatus === 'IDLE'
-                ? 'اضغط على زر المكالمة وابدأ بالتحدث مباشرة'
-                : 'تحدث الآن: "ابني تطبيق اندرويد"، "اريد انشاء صوره"، "اريد انشاء لعبه"، "اربط النواة"'}
-            </p>
+          )}
+
+          {/* Assistant Voice Response Card */}
+          {lastAssistantResponse && (
+            <div className={`px-4 py-3 rounded-2xl border transition-all flex items-start gap-2.5 text-right ${
+              callStatus === 'SPEAKING'
+                ? 'bg-purple-950/60 border-purple-500/50 shadow-purple-500/20 shadow-lg animate-pulse'
+                : 'bg-slate-900/80 border-slate-800 text-slate-200 shadow-lg'
+            }`}>
+              <div className="p-1 rounded-lg bg-purple-500/20 text-purple-400 shrink-0 mt-0.5">
+                <Sparkles className="w-4 h-4" />
+              </div>
+              <div className="flex-1">
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-[10px] font-mono text-purple-300 font-bold">
+                    {callStatus === 'SPEAKING' ? 'النواة تتحدث...' : 'رد النواة:'}
+                  </span>
+                  {callStatus === 'SPEAKING' && (
+                    <span className="flex items-center gap-1 text-[10px] text-purple-400 font-mono">
+                      <Volume2 className="w-3 h-3 animate-bounce" />
+                      <span>صوت نشط</span>
+                    </span>
+                  )}
+                </div>
+                <p className="text-xs font-medium text-slate-100 leading-relaxed">
+                  {lastAssistantResponse}
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* Active Workspace / Action Notice Banner */}
+          {activeActionNotice && onOpenWorkspace && (
+            <div className="px-3.5 py-2.5 rounded-2xl bg-cyan-950/60 border border-cyan-500/40 flex items-center justify-between shadow-lg animate-in fade-in duration-300">
+              <span className="text-xs text-cyan-200">
+                جاهز: <strong>{activeActionNotice.name}</strong>
+              </span>
+              <button
+                onClick={() => onOpenWorkspace(activeActionNotice.workspace)}
+                className="px-3 py-1.5 text-xs rounded-xl bg-cyan-500 text-slate-950 font-bold hover:bg-cyan-400 transition-colors cursor-pointer shadow-sm"
+              >
+                فتح الشاشة الآن
+              </button>
+            </div>
+          )}
+
+          {/* Permission Notice */}
+          {permissionError && (
+            <div className="px-4 py-2 bg-amber-950/40 border border-amber-500/30 rounded-2xl text-xs text-amber-200 flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 shrink-0 text-amber-400" />
+              <span>{permissionError}</span>
+            </div>
           )}
         </div>
-
-        {/* Permission Error Message */}
-        {permissionError && (
-          <div className="mt-2 px-4 py-2 bg-rose-950/60 border border-rose-500/40 rounded-xl text-xs text-rose-300 flex items-center gap-2">
-            <AlertTriangle className="w-4 h-4 shrink-0" />
-            <span>{permissionError}</span>
-          </div>
-        )}
       </div>
 
-      {/* Bottom Area: Clean Quick Command Chips (For easy testing / noisy environments) */}
-      <div className="w-full max-w-lg flex flex-col items-center space-y-2 pb-2 z-10">
-        <div className="flex flex-wrap items-center justify-center gap-1.5 w-full">
-          {[
-            'ابني تطبيق اندرويد او ايفون',
-            'اريد انشاء صوره',
-            'اريد انشاء لعبه',
-            'افتح صفحه انشاء فديو اوصوت',
-            'اربط بالكيت هب',
-            'اربط بالسوبابيس',
-            'دعنا نربط النوات',
-            'لنبدا تعليم النوات',
-          ].map((cmd, idx) => (
-            <button
-              key={idx}
-              onClick={() => onQuickIntent(cmd)}
-              className="px-3 py-1.5 bg-slate-900/80 hover:bg-cyan-950/60 border border-slate-800/80 hover:border-cyan-500/40 text-xs text-slate-300 hover:text-cyan-200 rounded-xl transition-all cursor-pointer shadow-sm active:scale-95"
-            >
-              {cmd}
-            </button>
-          ))}
-        </div>
+      {/* Bottom Area: Clean Dialogue Box for Chat & Commands */}
+      <div className="w-full max-w-lg z-20 pb-2">
+        <form
+          onSubmit={handleSendChat}
+          className="relative flex items-center bg-slate-900/90 backdrop-blur-xl border border-slate-700/80 hover:border-cyan-500/50 focus-within:border-cyan-500 rounded-2xl p-1.5 shadow-2xl transition-all"
+        >
+          <input
+            type="text"
+            value={chatInput}
+            onChange={(e) => setChatInput(e.target.value)}
+            placeholder="اكتب أمرك أو سؤالك هنا (مثلاً: لنعلم النواة، افتح صفحة بناء التطبيقات)..."
+            className="flex-1 bg-transparent px-3.5 py-2 text-xs text-white placeholder:text-slate-500 focus:outline-none text-right font-sans"
+          />
+
+          <button
+            type="submit"
+            disabled={!chatInput.trim()}
+            className="p-2.5 bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-slate-950 font-bold rounded-xl transition-all cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed shadow-md"
+            title="إرسال الأمر للنواة"
+          >
+            <Send className="w-4 h-4" />
+          </button>
+        </form>
       </div>
     </div>
   );
 };
-

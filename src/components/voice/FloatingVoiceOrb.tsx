@@ -46,15 +46,8 @@ export const FloatingVoiceOrb: React.FC<FloatingVoiceOrbProps> = ({
       } else {
         audioEngine.safeStopMicrophone();
       }
-    } catch (e) {
-      console.error('[FloatingVoiceOrb] Toggle error:', e);
-    } finally {
-      // Ensure state machine is returned to IDLE or LISTENING, never stuck in THINKING
-      setTimeout(() => {
-        if (audioEngine.getStatus() === 'THINKING') {
-          audioEngine.resetToListening();
-        }
-      }, 350);
+    } catch (e: any) {
+      console.warn('[FloatingVoiceOrb] Toggle notice:', e?.name || e?.message);
     }
   };
 

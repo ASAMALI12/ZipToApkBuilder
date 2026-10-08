@@ -24,9 +24,11 @@ export default function App() {
   const [activeWorkspace, setActiveWorkspace] = useState<WorkspaceType>('home');
   const [callStatus, setCallStatus] = useState<CallStatus>(audioEngine.getStatus());
 
-  // Transcripts
+  // Transcripts & Assistant Replies
   const [currentTranscript, setCurrentTranscript] = useState<string>('');
   const [isInterim, setIsInterim] = useState<boolean>(false);
+  const [lastAssistantResponse, setLastAssistantResponse] = useState<string>('');
+  const [activeActionNotice, setActiveActionNotice] = useState<{ name: string; workspace: string } | null>(null);
 
   // Bound Kernel State
   const [boundKernel, setBoundKernel] = useState<BoundKernel | null>(() =>
@@ -34,39 +36,57 @@ export default function App() {
   );
 
   // Apply Intent to Router
-  const applyIntentRouting = useCallback((intent: string) => {
+  const applyIntentRouting = useCallback((intent: string, responseText?: string, spokenText?: string) => {
+    if (responseText || spokenText) {
+      setLastAssistantResponse(responseText || spokenText || '');
+    }
+
     if (intent === 'INTENT_CLOSE_MIC') {
       audioEngine.safeStopMicrophone();
+      setLastAssistantResponse('تم إيقاف الميكروفون وحفظ طاقة النواة.');
       return;
     }
-    if (intent === 'INTENT_BUILD_APP') {
+
+    if (intent === 'INTENT_TEACH_KERNEL') {
+      setActiveActionNotice({ name: 'صفحة تعليم وتدريب النواة', workspace: 'kernel_trainer' });
+      setActiveWorkspace('kernel_trainer');
+    } else if (intent === 'INTENT_BUILD_APP') {
+      setActiveActionNotice({ name: 'صفحة بناء وتطوير التطبيقات', workspace: 'app_builder' });
       setActiveWorkspace('app_builder');
     } else if (intent === 'INTENT_GENERATE_IMAGE') {
+      setActiveActionNotice({ name: 'استوديو توليد وتصميم الصور', workspace: 'image_generator' });
       setActiveWorkspace('image_generator');
     } else if (intent === 'INTENT_CREATE_GAME') {
+      setActiveActionNotice({ name: 'استوديو صناعة وبرمجة الألعاب', workspace: 'game_builder' });
       setActiveWorkspace('game_builder');
     } else if (intent === 'INTENT_CREATE_MEDIA') {
+      setActiveActionNotice({ name: 'استوديو إنتاج الفيديو والصوت', workspace: 'media_studio' });
       setActiveWorkspace('media_studio');
     } else if (intent === 'INTENT_CONNECT_GITHUB') {
+      setActiveActionNotice({ name: 'ربط منصة جيت هب', workspace: 'github_bridge' });
       setActiveWorkspace('github_bridge');
     } else if (intent === 'INTENT_CONNECT_SUPABASE') {
+      setActiveActionNotice({ name: 'ربط قواعد بيانات سوبابيس', workspace: 'supabase_bridge' });
       setActiveWorkspace('supabase_bridge');
     } else if (intent === 'INTENT_LINK_KERNEL') {
+      setActiveActionNotice({ name: 'ربط ملف النواة من الهاتف', workspace: 'kernel_linker' });
       setActiveWorkspace('kernel_linker');
-    } else if (intent === 'INTENT_TEACH_KERNEL') {
-      setActiveWorkspace('kernel_trainer');
+    } else {
+      // General Query / Knowledge test / Chat: stay on home and converse!
+      setActiveActionNotice(null);
     }
   }, []);
 
-  // Manual / Quick-Chip Intent Processing & Router
+  // Autonomous Intent Processing via Voice or Text Chat Box
   const processIntentExecution = useCallback(
     async (utteranceText: string) => {
       if (!utteranceText.trim()) return;
 
+      setCurrentTranscript(utteranceText.trim());
       const parsed = await parseUtterance(utteranceText);
-      applyIntentRouting(parsed.intent);
+      applyIntentRouting(parsed.intent, parsed.assistant_response, parsed.voice_spoken_text);
 
-      // Audio Response via TTS for manual chip triggers
+      // Voice TTS feedback
       if (parsed.voice_spoken_text) {
         const base64Wav = await requestTTSAudio(parsed.voice_spoken_text);
         if (base64Wav) {
@@ -79,7 +99,7 @@ export default function App() {
     [applyIntentRouting]
   );
 
-  // Audio Engine Lifecycle
+  // Audio Engine Lifecycle Listeners
   useEffect(() => {
     const unsubStatus = audioEngine.subscribeStatus((st) => setCallStatus(st));
 
@@ -89,8 +109,14 @@ export default function App() {
     };
 
     const unsubResult = (res: any) => {
+      if (res.transcript) {
+        setCurrentTranscript(res.transcript);
+      }
+      if (res.assistant_response || res.voice_spoken_text) {
+        setLastAssistantResponse(res.assistant_response || res.voice_spoken_text || '');
+      }
       if (res.intent) {
-        applyIntentRouting(res.intent);
+        applyIntentRouting(res.intent, res.assistant_response, res.voice_spoken_text);
       }
     };
 
@@ -104,6 +130,24 @@ export default function App() {
     };
   }, [applyIntentRouting]);
 
+  // Sync stored kernel and learned knowledge with server on startup
+  useEffect(() => {
+    const knowledge = StorageEngine.loadLearnedKnowledge();
+    const kernel = StorageEngine.loadBoundKernel();
+    if (knowledge || kernel) {
+      fetch('/api/kernel/session-init', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          summaryContext: knowledge || (kernel?.instructions ? kernel.instructions.join('\n') : ''),
+          rules: kernel?.rules || [],
+          instructions: kernel?.instructions || [],
+          kernelName: kernel?.name || 'النواة الذاتية',
+        }),
+      }).catch(() => {});
+    }
+  }, []);
+
   const handleBindKernel = (kernel: BoundKernel | null) => {
     setBoundKernel(kernel);
     StorageEngine.saveBoundKernel(kernel);
@@ -113,16 +157,25 @@ export default function App() {
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-arabic select-none selection:bg-cyan-500/30 selection:text-cyan-200">
       {/* Main Viewport */}
       <main className="flex-1 flex flex-col">
-        {/* 1. Ultra-clean Minimalist Launcher (Empty canvas with Voice Call Button only) */}
+        {/* Pure Clean Minimalist Voice & Chat Launcher */}
         {activeWorkspace === 'home' && (
           <CentralCallOrb
-            onQuickIntent={(phrase) => {
-              setCurrentTranscript(phrase);
-              processIntentExecution(phrase);
-            }}
+            onQuickIntent={processIntentExecution}
             currentTranscript={currentTranscript}
             isInterimTranscript={isInterim}
             boundKernel={boundKernel}
+            lastAssistantResponse={lastAssistantResponse}
+            activeActionNotice={activeActionNotice}
+            onOpenWorkspace={(ws) => setActiveWorkspace(ws as WorkspaceType)}
+          />
+        )}
+
+        {/* 1. Kernel Trainer (تعليم النواة) */}
+        {activeWorkspace === 'kernel_trainer' && (
+          <KernelTrainerView
+            boundKernel={boundKernel}
+            onUpdateBoundKernel={handleBindKernel}
+            onBackToHome={() => setActiveWorkspace('home')}
           />
         )}
 
@@ -165,24 +218,7 @@ export default function App() {
             autoOpenFilePicker={true}
           />
         )}
-
-        {/* 9. Kernel Trainer (Voice & Chat training) */}
-        {activeWorkspace === 'kernel_trainer' && (
-          <KernelTrainerView
-            boundKernel={boundKernel}
-            onUpdateBoundKernel={handleBindKernel}
-            onBackToHome={() => setActiveWorkspace('home')}
-          />
-        )}
       </main>
-
-      {/* Persistent Floating Voice Widget (Shown when navigating other pages) */}
-      {activeWorkspace !== 'home' && (
-        <FloatingVoiceOrb
-          onExpandToHome={() => setActiveWorkspace('home')}
-          activeWorkspaceName={activeWorkspace}
-        />
-      )}
     </div>
   );
 }

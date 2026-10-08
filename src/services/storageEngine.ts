@@ -242,4 +242,51 @@ export class StorageEngine {
       }
     } catch {}
   }
+
+  public static loadLearnedKnowledge(): string {
+    try {
+      return localStorage.getItem('kernel_learned_knowledge_v1') || '';
+    } catch {
+      return '';
+    }
+  }
+
+  public static async saveLearnedKnowledge(text: string): Promise<void> {
+    try {
+      localStorage.setItem('kernel_learned_knowledge_v1', text);
+      const lines = text
+        .split('\n')
+        .map((l) => l.trim())
+        .filter(Boolean);
+
+      const existing = StorageEngine.loadBoundKernel();
+      const updatedKernel: BoundKernel = {
+        name: existing?.name || 'النواة المتعلمة',
+        fileName: existing?.fileName || 'learned_kernel.json',
+        fileSize: existing?.fileSize || text.length,
+        bindTimestamp: new Date().toISOString(),
+        version: existing?.version || '3.5.0-learned',
+        rules: lines.slice(0, 15),
+        instructions: lines,
+        rawContent: text,
+        isActive: true,
+      };
+
+      StorageEngine.saveBoundKernel(updatedKernel);
+
+      // Sync immediately to server session memory
+      try {
+        await fetch('/api/kernel/session-init', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            summaryContext: `التعليمات والمعرفة التي تعلمتها النواة:\n${text}`,
+            rules: lines.slice(0, 15),
+            instructions: lines,
+            kernelName: updatedKernel.name,
+          }),
+        });
+      } catch {}
+    } catch {}
+  }
 }
