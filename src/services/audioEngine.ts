@@ -2,7 +2,7 @@ import { CallStatus, AudioEngineMetrics, IntentResult } from '../types/kernel';
 import { SileroStyleVAD } from './vadEngine';
 import { StreamingAudioPlayer } from './streamingAudioPlayer';
 import { StorageEngine } from './storageEngine';
-import { parseUtterance, checkQuickIntent } from './intentParser';
+import { parseUtterance, checkQuickIntent, normalizeArabic, requestTTSAudio } from './intentParser';
 
 type StatusListener = (status: CallStatus) => void;
 type TranscriptListener = (text: string, isFinal: boolean) => void;
@@ -136,6 +136,11 @@ class AudioEngine {
   // Speech buffer for offline/HTTP fallback
   private recorded16kChunks: Float32Array[] = [];
   private isProcessingAudio: boolean = false;
+  private speechHandledForCurrentTurn: boolean = false;
+
+  // Request & Lifecycle Tracking (prevents race conditions and duplicates)
+  private currentRequestId: number = 0;
+  private activeAbortController: AbortController | null = null;
 
   // Energy Tracking
   private currentMicEnergy: number = 0;
@@ -145,12 +150,45 @@ class AudioEngine {
   private aiSpeakingStartTime: number = 0;
   private lastSpokenText: string = '';
   private lastSpokenTimestamp: number = 0;
+  private activeSpeechCancelFn: (() => void) | null = null;
 
   // Native Browser Speech Recognition Engine (0ms Arabic stream)
   private speechRecognizer: any = null;
   private currentLiveTranscript: string = '';
   private lastProcessedUtterance: string = '';
   private lastProcessedTimestamp: number = 0;
+  private currentSpeechUtterance: any = null;
+
+  /**
+   * Identifies whether incoming transcript is acoustic feedback/echo
+   * from the device speakers playing assistant voice.
+   */
+  public isAssistantEcho(transcript: string): boolean {
+    // Echo ONLY exists while the assistant is actively speaking through the speakers
+    if (this.callStatus !== 'SPEAKING') return false;
+    if (!this.lastSpokenText) return false;
+
+    const normTrans = normalizeArabic(transcript);
+    const normAI = normalizeArabic(this.lastSpokenText);
+    if (!normTrans || !normAI) return false;
+
+    // Explicit user barge-in commands are NEVER echo!
+    const quick = checkQuickIntent(transcript);
+    if (quick) return false;
+    if (/(?:اسكت|اصمت|وقف|توقف|كافي|بس|stop|quiet)/i.test(normTrans)) return false;
+
+    // Single words are unlikely to be echo, user is trying to speak
+    if (normTrans.split(' ').length < 2) return false;
+
+    // Substantial exact match of assistant's words while speaking
+    if (normAI.includes(normTrans) && normTrans.length >= 8) return true;
+
+    // High word token overlap (> 75%)
+    const transWords = normTrans.split(' ').filter((w) => w.length > 2);
+    if (transWords.length < 3) return false;
+    const matchCount = transWords.filter((w) => normAI.includes(w)).length;
+    return matchCount / transWords.length >= 0.75;
+  }
 
   private constructor() {
     this.vad = new SileroStyleVAD({
@@ -186,6 +224,7 @@ class AudioEngine {
   private setupVadCallbacks() {
     // 1. Speech just started (with pre-roll preserved)
     this.vad.onSpeechStart = (preRoll: Float32Array) => {
+      this.speechHandledForCurrentTurn = false;
       if (this.callStatus !== 'LISTENING' || this.isProcessingAudio) return;
 
       this.recorded16kChunks = [];
@@ -215,31 +254,48 @@ class AudioEngine {
       // In TAP_TO_TALK mode, user controls when to stop by tapping
       if (this.callMode === 'TAP_TO_TALK') return;
 
+      // If already processed via Web Speech API in this turn, don't duplicate via raw audio!
+      if (this.speechHandledForCurrentTurn) {
+        this.speechHandledForCurrentTurn = false;
+        this.recorded16kChunks = [];
+        this.vad.reset();
+        return;
+      }
+
       // Endpoint Detection Trigger:
-      // If we have recognized text from live speech stream, commit immediately without delay!
+      // 1. If we have recognized text from live speech stream, commit immediately without delay!
       if (this.currentLiveTranscript && this.currentLiveTranscript.trim().length > 0) {
         const textToCommit = this.currentLiveTranscript.trim();
         this.currentLiveTranscript = '';
         this.recorded16kChunks = [];
         this.vad.reset();
-        this.handleDirectTextUtterance(textToCommit);
+        this.speechHandledForCurrentTurn = true;
+        this.executeUtterance(textToCommit, 'speech');
         return;
       }
 
-      this.commitCurrentUtterance();
+      // 2. Fallback: If Web Speech produced no text, check if user voiced real audio (> 300ms):
+      const totalSamples = this.recorded16kChunks.reduce((acc, c) => acc + c.length, 0);
+      if (totalSamples >= 4800) {
+        this.commitCurrentUtterance();
+        return;
+      }
+
+      // 3. Short tap, cough, or tiny ambient click (< 300ms): discard cleanly
+      this.recorded16kChunks = [];
+      this.vad.reset();
     };
 
-    // 4. Energy calculation
+    // 4. Energy calculation with instant Barge-In Interruption
     this.vad.onEnergy = (energy: number, isSpeech: boolean) => {
       this.currentMicEnergy = Math.min(1.0, energy * 12);
       this.notifyEnergy(this.currentMicEnergy, this.currentOutputEnergy);
 
       // Full-Duplex Barge-In Interruption with Echo Guard:
-      // Prevent speaker audio feedback from instantly killing the AI's own voice!
+      // When the user speaks while AI is speaking, interrupt voice playback immediately (< 20ms)!
       if (this.callStatus === 'SPEAKING' && isSpeech) {
         const timeSinceSpeechStart = Date.now() - this.aiSpeakingStartTime;
-        // Grace period of 2500ms + requires loud intentional voice (> 0.75) to barge in
-        if (timeSinceSpeechStart > 2500 && this.currentMicEnergy > 0.75) {
+        if (timeSinceSpeechStart > 120 && this.currentMicEnergy > 0.08) {
           this.triggerBargeIn();
         }
       }
@@ -524,23 +580,43 @@ class AudioEngine {
           }
 
           const displayText = finalUtterance.trim() || interim.trim();
-          if (displayText) {
-            this.currentLiveTranscript = displayText;
-            this.notifyTranscript(displayText, Boolean(finalUtterance.trim()));
+          if (!displayText) return;
 
-            // Only trigger immediate mute/close mic during interim speech (e.g. user shouts 'اسكت')
+          // Acoustic Echo Cancellation: ignore microphone pickup of assistant's own voice
+          if (this.isAssistantEcho(displayText)) {
+            return;
+          }
+
+          // Voice Barge-In: user is speaking while assistant is speaking!
+          if (this.callStatus === 'SPEAKING') {
+            this.interruptSpeech();
             const quickMatch = checkQuickIntent(displayText);
             if (quickMatch && quickMatch.intent === 'INTENT_CLOSE_MIC') {
               this.currentLiveTranscript = '';
-              this.handleDirectTextUtterance(displayText);
+              this.notifyTranscript(displayText, true);
+              this.notifyResult(quickMatch);
               return;
             }
           }
 
+          this.currentLiveTranscript = displayText;
+          this.notifyTranscript(displayText, Boolean(finalUtterance.trim()));
+
+          // Only trigger immediate mute/close mic during interim speech (e.g. user shouts 'اسكت')
+          const quickMatch = checkQuickIntent(displayText);
+          if (quickMatch && quickMatch.intent === 'INTENT_CLOSE_MIC') {
+            this.currentLiveTranscript = '';
+            this.handleDirectTextUtterance(displayText);
+            return;
+          }
+
           if (finalUtterance.trim()) {
             const finalClean = finalUtterance.trim();
+            if (this.isAssistantEcho(finalClean)) return;
             this.currentLiveTranscript = '';
-            this.handleDirectTextUtterance(finalClean);
+            this.speechHandledForCurrentTurn = true;
+            this.recorded16kChunks = [];
+            this.executeUtterance(finalClean, 'speech');
           }
         };
 
@@ -603,8 +679,31 @@ class AudioEngine {
   /**
    * Fast full-duplex barge-in interruption (< 20ms)
    */
-  private triggerBargeIn() {
+  public interruptSpeech(): void {
     this.player.interrupt();
+    if (this.activeSpeechCancelFn) {
+      try {
+        this.activeSpeechCancelFn();
+      } catch {}
+      this.activeSpeechCancelFn = null;
+    }
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      try {
+        window.speechSynthesis.cancel();
+      } catch {}
+    }
+    if (this.callStatus === 'SPEAKING' || this.callStatus === 'BARGE_IN') {
+      this.setStatus('LISTENING');
+    }
+  }
+
+  private triggerBargeIn() {
+    this.interruptSpeech();
+    this.currentRequestId++;
+    if (this.activeAbortController) {
+      this.activeAbortController.abort();
+      this.activeAbortController = null;
+    }
     this.setStatus('LISTENING');
     this.bargeInListeners.forEach((l) => l(20));
     this.recorded16kChunks = [];
@@ -689,14 +788,57 @@ class AudioEngine {
   }
 
   /**
-   * High-speed direct text utterance handling:
-   * 1. Evaluates Tier 1 local fast-path regex (0ms instantaneous execution)
-   * 2. If general query, sends fast text-only NLU request to server (~200ms)
-   * Completely bypasses heavy audio transcoding and wait times!
+   * Unified Single Speech Synthesizer Output:
+   * Ensures only ONE audio output plays at any time, with deduplication and barge-in support.
    */
-  public async handleDirectTextUtterance(text: string): Promise<void> {
+  public async speak(text: string, base64Audio?: string): Promise<void> {
+    const cleanText = text?.trim();
+    if (!cleanText) return;
+
+    // Interrupt any previous speech
+    this.interruptSpeech();
+
+    // Guard against identical speech repeating within 1.5s
+    const now = Date.now();
+    if (cleanText === this.lastSpokenText && now - this.lastSpokenTimestamp < 1500) {
+      return;
+    }
+    this.lastSpokenText = cleanText;
+    this.lastSpokenTimestamp = now;
+
+    if (base64Audio) {
+      this.setStatus('SPEAKING');
+      this.aiSpeakingStartTime = Date.now();
+      await this.player.enqueueBase64Chunk(base64Audio);
+      return;
+    }
+
+    // Tier 1: Try natural Neural TTS audio via /api/tts (Web Audio API - universal support across all devices)
+    try {
+      const remoteWav = await requestTTSAudio(cleanText);
+      if (remoteWav) {
+        this.setStatus('SPEAKING');
+        this.aiSpeakingStartTime = Date.now();
+        await this.player.enqueueBase64Chunk(remoteWav);
+        return;
+      }
+    } catch (e) {
+      console.warn('[AudioEngine] Remote TTS notice, falling back:', e);
+    }
+
+    // Tier 2: Browser Web Speech API fallback
+    await this.playFallbackSpeech(cleanText);
+  }
+
+  /**
+   * Single Unified Utterance Dispatcher:
+   * Handles local fast-path commands in 0ms (< 1ms).
+   * Dispatches general queries to NLU ONCE (never duplicated!).
+   * Cancels stale requests via Request ID and AbortController.
+   */
+  public async executeUtterance(text: string, source: 'speech' | 'vad' | 'chat' = 'speech'): Promise<void> {
     const cleanText = text.trim();
-    if (!cleanText || this.isProcessingAudio) return;
+    if (!cleanText) return;
 
     // Fast deduplication guard: prevent double-executing the same phrase within 1.5s
     const now = Date.now();
@@ -706,76 +848,128 @@ class AudioEngine {
     this.lastProcessedUtterance = cleanText;
     this.lastProcessedTimestamp = now;
 
+    // Cancel any previous in-flight request
+    if (this.activeAbortController) {
+      this.activeAbortController.abort();
+      this.activeAbortController = null;
+    }
+
+    const reqId = ++this.currentRequestId;
+    const abortController = new AbortController();
+    this.activeAbortController = abortController;
+
+    const startTime = performance.now();
+    const boundKernel = StorageEngine.loadBoundKernel();
+    const isKernelBound = Boolean(boundKernel && boundKernel.isActive);
+
+    // 1. Tier 1 Fast Local Pattern Match: 0ms instantaneous execution!
+    const quickMatch = checkQuickIntent(cleanText);
+    if (quickMatch) {
+      // If no kernel is bound, allow only linking the kernel or closing the mic
+      if (!isKernelBound && quickMatch.intent !== 'INTENT_LINK_KERNEL' && quickMatch.intent !== 'INTENT_CLOSE_MIC') {
+        this.isProcessingAudio = false;
+        const unboundNotice: IntentResult = {
+          intent: 'INTENT_LINK_KERNEL',
+          confidence: 1.0,
+          parameters: { target: 'kernel_linker', raw_utterance: cleanText },
+          ui_action: 'ROUTE_PREDEFINED',
+          assistant_response: 'النواة غير مربوطة بعد. النظام يعتمد كلياً على النواة ولا يعمل إلا من خلالها. يرجى ربط ملف النواة لتفعيل التحدث والعمل.',
+          voice_spoken_text: 'يرجى ربط ملف النواة أولاً لتفعيل النظام.',
+        };
+        this.notifyTranscript(cleanText, true);
+        this.notifyResult(unboundNotice);
+        await this.speak(unboundNotice.voice_spoken_text);
+        return;
+      }
+
+      this.isProcessingAudio = false;
+      const localLatencyMs = Math.round(performance.now() - startTime);
+      console.log(`[Kernel Voice Latency] Local command "${cleanText}" executed in ${localLatencyMs}ms`);
+
+      this.notifyTranscript(cleanText, true);
+      this.notifyResult({
+        ...quickMatch,
+        parameters: { ...quickMatch.parameters, latencyMs: localLatencyMs },
+      });
+
+      if (quickMatch.voice_spoken_text) {
+        await this.speak(quickMatch.voice_spoken_text);
+      }
+      return;
+    }
+
+    // If no kernel is bound, require linking the kernel before executing any commands
+    if (!isKernelBound) {
+      this.isProcessingAudio = false;
+      const unboundNotice: IntentResult = {
+        intent: 'INTENT_LINK_KERNEL',
+        confidence: 1.0,
+        parameters: { target: 'kernel_linker', raw_utterance: cleanText },
+        ui_action: 'ROUTE_PREDEFINED',
+        assistant_response: 'النواة غير مربوطة بعد. النظام يعتمد كلياً على النواة ولا يعمل إلا من خلالها. يرجى ربط ملف النواة لتفعيل النظام وبدء التحدث والعمل.',
+        voice_spoken_text: 'يرجى ربط ملف النواة أولاً لتفعيل النظام.',
+      };
+      this.notifyTranscript(cleanText, true);
+      this.notifyResult(unboundNotice);
+      await this.speak(unboundNotice.voice_spoken_text);
+      return;
+    }
+
+    // 2. Tier 2 Remote NLU: executed ONCE and only once with active bound kernel context
     this.isProcessingAudio = true;
     this.setStatus('THINKING');
 
     try {
-      // 1. Tier 1 Fast Local Pattern Match: 0ms instantaneous response!
-      const localResult = await parseUtterance(cleanText);
-      if (localResult.intent !== 'INTENT_GENERAL_QUERY') {
-        this.isProcessingAudio = false;
-        this.notifyTranscript(cleanText, true);
-        this.notifyResult(localResult);
-        if (localResult.voice_spoken_text) {
-          this.playFallbackSpeech(localResult.voice_spoken_text);
-        }
-        return;
-      }
+      const data = await parseUtterance(cleanText, abortController.signal, boundKernel);
 
-      // 2. High-speed text NLU endpoint (0 audio latency, ~200ms)
-      const response = await fetch('/api/nlu/parse-intent', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ utterance: cleanText }),
+      // Verify request is still active and was not superseded or interrupted
+      if (this.currentRequestId !== reqId) return;
+
+      this.isProcessingAudio = false;
+      const totalLatencyMs = Math.round(performance.now() - startTime);
+      console.log(`[Kernel Voice Latency] Query "${cleanText}" resolved in ${totalLatencyMs}ms`);
+
+      this.notifyTranscript(cleanText, true);
+      this.notifyResult({
+        ...data,
+        parameters: { ...data.parameters, latencyMs: totalLatencyMs },
       });
 
-      if (response.ok) {
-        const data = await response.json();
-        this.isProcessingAudio = false;
-        this.notifyTranscript(cleanText, true);
-        this.notifyResult({
-          intent: data.intent || 'INTENT_GENERAL_QUERY',
-          confidence: data.confidence || 0.95,
-          parameters: data.parameters || { raw_utterance: cleanText },
-          ui_action: data.ui_action || 'ROUTE_PREDEFINED',
-          assistant_response: data.assistant_response || '',
-          voice_spoken_text: data.voice_spoken_text || '',
-        });
-        if (data.voice_spoken_text) {
-          this.playFallbackSpeech(data.voice_spoken_text);
-        }
-        return;
+      if (data.voice_spoken_text) {
+        await this.speak(data.voice_spoken_text);
+      } else {
+        this.resetToListening();
       }
-    } catch (err) {
-      console.warn('[AudioEngine] Fast direct text error, recovering:', err);
+    } catch (err: any) {
+      if (err.name === 'AbortError') return;
+      console.warn('[AudioEngine] Utterance execution notice:', err);
+      this.isProcessingAudio = false;
+      this.resetToListening();
     } finally {
-      if (this.callStatus === 'THINKING') {
+      if (this.activeAbortController === abortController) {
+        this.activeAbortController = null;
+      }
+      if (this.currentRequestId === reqId && this.callStatus === 'THINKING') {
         this.resetToListening();
       }
     }
   }
 
+  public async handleDirectTextUtterance(text: string): Promise<void> {
+    await this.executeUtterance(text, 'speech');
+  }
+
   /**
    * Commits the current speech utterance:
-   * Notifies WebSocket end_utterance, with HTTP fallback if offline.
+   * Only called when SpeechRecognition is unavailable or provided no text.
    * Micro-stream is KEPT OPEN AND RUNNING.
    */
   public async commitCurrentUtterance(): Promise<void> {
     if (this.isProcessingAudio) return;
 
-    // If native speech engine already captured the words, run immediately in 0ms!
-    if (this.currentLiveTranscript && this.currentLiveTranscript.trim().length > 1) {
-      const textToRun = this.currentLiveTranscript.trim();
-      this.currentLiveTranscript = '';
-      this.recorded16kChunks = [];
-      this.vad.reset();
-      await this.handleDirectTextUtterance(textToRun);
-      return;
-    }
-
-    // Minimum utterance length validation (~100ms = 1600 samples at 16kHz)
+    // Minimum utterance length validation (~300ms = 4800 samples at 16kHz)
     const totalSamples = this.recorded16kChunks.reduce((acc, c) => acc + c.length, 0);
-    if (totalSamples < 1600) {
+    if (totalSamples < 4800) {
       this.recorded16kChunks = [];
       this.vad.reset();
       return;
@@ -783,6 +977,9 @@ class AudioEngine {
 
     this.isProcessingAudio = true;
     this.setStatus('THINKING');
+
+    const reqId = ++this.currentRequestId;
+    const startTime = performance.now();
 
     // Encode audio to base64 synchronously (0ms latency, bypass FileReader)
     const mergedSamples = new Float32Array(totalSamples);
@@ -800,10 +997,9 @@ class AudioEngine {
       return;
     }
 
-    // 5-second Safety Abort Controller Timeout for "THINKING" state
     let isHandled = false;
     const safetyTimer = setTimeout(() => {
-      if (!isHandled && this.callStatus === 'THINKING') {
+      if (!isHandled && this.callStatus === 'THINKING' && this.currentRequestId === reqId) {
         console.warn('[AudioEngine] 5s Safety Timeout in THINKING state. Resetting to LISTENING.');
         this.resetToListening();
       }
@@ -813,7 +1009,7 @@ class AudioEngine {
       // 1. Try WebSocket fast-path streaming first
       if (this.ws && this.ws.readyState === WebSocket.OPEN && this.isWsConnected) {
         try {
-          this.ws.send(JSON.stringify({ type: 'end_utterance', audioBase64: base64Audio }));
+          this.ws.send(JSON.stringify({ type: 'end_utterance', audioBase64: base64Audio, reqId }));
           return;
         } catch {
           // Fall through to HTTP fallback
@@ -822,12 +1018,21 @@ class AudioEngine {
 
       // 2. HTTP Fallback Path
       try {
+        const bound = StorageEngine.loadBoundKernel();
         const response = await fetch('/api/voice/process-audio', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             audioBase64: base64Audio,
             mimeType: 'audio/wav',
+            kernelContext: bound
+              ? {
+                  name: bound.name,
+                  rules: bound.rules,
+                  instructions: bound.instructions,
+                  summaryContext: bound.rawContent || bound.name,
+                }
+              : null,
           }),
         });
 
@@ -835,34 +1040,55 @@ class AudioEngine {
           isHandled = true;
           clearTimeout(safetyTimer);
           const data = await response.json();
+
+          if (this.currentRequestId !== reqId) return; // Discard superseded request
+
           this.isProcessingAudio = false;
+          const totalLatencyMs = Math.round(performance.now() - startTime);
+          console.log(`[Kernel Audio Latency] Raw audio processed in ${totalLatencyMs}ms`);
 
           if (data.transcript && data.transcript.trim()) {
             this.notifyTranscript(data.transcript.trim(), true);
           }
 
-          if (data.intent) {
+          // If kernel is not bound and user did not say link or stop: require linking!
+          if (!bound?.isActive && data.intent !== 'INTENT_LINK_KERNEL' && data.intent !== 'INTENT_CLOSE_MIC') {
+            const unboundNotice = {
+              intent: 'INTENT_LINK_KERNEL',
+              confidence: 1.0,
+              parameters: { target: 'kernel_linker', raw_utterance: data.transcript || '' },
+              ui_action: 'ROUTE_PREDEFINED',
+              assistant_response: 'النواة غير مربوطة بعد. النظام يعتمد كلياً على النواة ولا يعمل إلا من خلالها. يرجى ربط ملف النواة لتفعيل التحدث والعمل.',
+              voice_spoken_text: 'يرجى ربط ملف النواة أولاً لتفعيل النظام.',
+            };
+            this.notifyResult(unboundNotice);
+            await this.speak(unboundNotice.voice_spoken_text);
+            return;
+          }
+
+          if (data.intent && data.transcript && data.transcript.trim()) {
             this.notifyResult({
               intent: data.intent,
               confidence: data.confidence || 0.95,
-              parameters: { target: data.intent, raw_utterance: data.transcript || '' },
+              parameters: { target: data.intent, raw_utterance: data.transcript || '', latencyMs: totalLatencyMs },
               ui_action: data.ui_action || 'ROUTE_PREDEFINED',
               assistant_response: data.assistant_response || '',
               voice_spoken_text: data.voice_spoken_text || '',
             });
           }
 
-          if (data.voice_spoken_text) {
-            this.playFallbackSpeech(data.voice_spoken_text);
+          if (data.voice_spoken_text && data.transcript && data.transcript.trim()) {
+            await this.speak(data.voice_spoken_text);
+          } else {
+            this.resetToListening();
           }
         }
       } catch (err) {
         console.warn('[AudioEngine] HTTP audio processing notice:', err);
       }
     } finally {
-      // Always ensure state is safely returned and not stuck in THINKING
       setTimeout(() => {
-        if (this.callStatus === 'THINKING' && !this.isProcessingAudio) {
+        if (this.callStatus === 'THINKING' && !this.isProcessingAudio && this.currentRequestId === reqId) {
           this.resetToListening();
         }
       }, 500);
@@ -930,14 +1156,6 @@ class AudioEngine {
   public playFallbackSpeech(text: string): Promise<void> {
     if (!text || !text.trim()) return Promise.resolve();
 
-    // Deduplication guard: ignore identical utterances triggered within 2.5s
-    const now = Date.now();
-    if (text === this.lastSpokenText && now - this.lastSpokenTimestamp < 2500) {
-      return Promise.resolve();
-    }
-    this.lastSpokenText = text;
-    this.lastSpokenTimestamp = now;
-
     // 1. Play immediate audible confirmation chime
     this.playConfirmationChime();
 
@@ -951,8 +1169,9 @@ class AudioEngine {
       this.setStatus('SPEAKING');
       this.aiSpeakingStartTime = Date.now();
 
-      // Workaround for Chrome bug: resume synthesis if paused
+      // Workaround for Chrome/WebKit bug: cancel prior & resume synthesis
       try {
+        window.speechSynthesis.cancel();
         if (window.speechSynthesis.paused) {
           window.speechSynthesis.resume();
         }
@@ -985,6 +1204,8 @@ class AudioEngine {
       const finishSpeech = () => {
         if (isFinished) return;
         isFinished = true;
+        this.activeSpeechCancelFn = null;
+        this.currentSpeechUtterance = null;
 
         if (this.audioCtx && this.audioCtx.state === 'suspended') {
           this.audioCtx.resume().catch(() => {});
@@ -1001,6 +1222,8 @@ class AudioEngine {
         resolve();
       };
 
+      this.activeSpeechCancelFn = finishSpeech;
+
       utterance.onend = finishSpeech;
       utterance.onerror = (e) => {
         console.warn('[AudioEngine] Speech synthesis notification:', e);
@@ -1008,7 +1231,7 @@ class AudioEngine {
       };
 
       // Mobile Safari / Chrome safeguard timeout
-      const maxDuration = Math.max(2500, text.length * 110);
+      const maxDuration = Math.max(3000, text.length * 120);
       setTimeout(() => {
         if (!isFinished && this.callStatus === 'SPEAKING') {
           finishSpeech();
@@ -1016,7 +1239,11 @@ class AudioEngine {
       }, maxDuration);
 
       try {
+        this.currentSpeechUtterance = utterance;
         window.speechSynthesis.speak(utterance);
+        if (window.speechSynthesis.paused) {
+          window.speechSynthesis.resume();
+        }
       } catch (err) {
         console.warn('[AudioEngine] Speak failed:', err);
         finishSpeech();
@@ -1029,6 +1256,13 @@ class AudioEngine {
     if (this.callStatus === newStatus) return;
     this.callStatus = newStatus;
     this.statusListeners.forEach((listener) => listener(newStatus));
+
+    // When entering LISTENING state, ensure speech recognizer is active
+    if (newStatus === 'LISTENING' && this.speechRecognizer) {
+      try {
+        this.speechRecognizer.start();
+      } catch {}
+    }
   }
 
   public getStatus(): CallStatus {

@@ -87,21 +87,26 @@ function resolveDialectalIntent(cleanText: string, utterance: string) {
     uiAction = 'ROUTE_PREDEFINED';
     responseText = 'تم فتح واجهة الربط مع سوبابيس وقواعد البيانات.';
     spokenText = 'تم فتح صفحة سوبابيس.';
-  } else if (/(?:نربط\s+(?:ال)?نوات?|اربط\s+(?:ال)?نوات?|ربط\s+(?:ال)?نوات?|اختر\s+(?:ملف\s+)?(?:ال)?نوات?|link\s+kernel)/i.test(cleanText)) {
+  } else if (/(?:نربط\s+(?:ال)?نوات?|اربط\s+(?:ال)?نوات?|ربط\s+(?:ال)?نوات?|حمل\s+(?:ال)?نوات?|تحميل\s+(?:ال)?نوات?|اختر\s+(?:ملف\s+)?(?:ال)?نوات?|link\s+kernel)/i.test(cleanText)) {
     detectedIntent = 'INTENT_LINK_KERNEL';
     uiAction = 'ROUTE_PREDEFINED';
     responseText = 'جاري فتح ملفات الهاتف لاختيار النواة وربطها بالمحرك مباشرة.';
-    spokenText = 'جاري فتح ملفات لاختيار النواة.';
-  } else if (/(?:لنعلم\s+(?:ال)?نوات?|تعليم\s+(?:ال)?نوات?|تدريب\s+(?:ال)?نوات?|علم\s+(?:ال)?نوات?|ندرب\s+(?:ال)?نوات?|صفحة\s+تعليم|افتح\s+تعليم|teach\s+kernel)/i.test(cleanText)) {
+    spokenText = 'جاري فتح نافذة اختيار النواة.';
+  } else if (/(?:لنعلم\s+(?:ال)?نوات?|تعليم\s+(?:ال)?نوات?|تدريب\s+(?:ال)?نوات?|علم\s+(?:ال)?نوات?|ندرب\s+(?:ال)?نوات?|صفحة\s+تعليم|افتح\s+تعليم|محادثة\s+البرمجة|teach\s+kernel)/i.test(cleanText)) {
     detectedIntent = 'INTENT_TEACH_KERNEL';
     uiAction = 'ROUTE_PREDEFINED';
     responseText = 'تم فتح صفحة تعليم وتدريب النواة.';
     spokenText = 'تم فتح صفحة تعليم النواة.';
-  } else if (/^(?:إغلاق\s+الميكروفون|اسكت|اغلق\s+المايك|انكتم|stop\s+mic|close\s+mic|mute\s+mic)$/i.test(cleanText.trim())) {
+  } else if (/(?:ارجع|العود[ةه]|رجوع|الصفح[ةه]\s+السابق[ةه]|الرئيسي[ةه]|go\s+back|back)/i.test(cleanText)) {
+    detectedIntent = 'INTENT_NAVIGATE_BACK';
+    uiAction = 'ROUTE_PREDEFINED';
+    responseText = 'تمت العودة إلى الشاشة الرئيسية.';
+    spokenText = 'تمت العودة إلى الشاشة الرئيسية.';
+  } else if (/(?:إغلاق\s+الميكروفون|اسكت|اصمت|اغلق\s+المايك|انكتم|اخرس|كافي|بس|توقف|وقف|اوقف|أوقف\s+التحدث|stop\s+mic|close\s+mic|mute\s+mic)/i.test(cleanText.trim())) {
     detectedIntent = 'INTENT_CLOSE_MIC';
     uiAction = 'EXECUTE_SYSTEM_ACTION';
-    responseText = 'تم إيقاف الميكروفون وحفظ طاقة النواة.';
-    spokenText = 'تم إيقاف الميكروفون.';
+    responseText = 'تم إيقاف الميكروفون.';
+    spokenText = '';
   }
 
   return {
@@ -114,27 +119,23 @@ function resolveDialectalIntent(cleanText: string, utterance: string) {
   };
 }
 
-// Resilient Gemini model invoker that uses fast, available models with active free quota
+// Resilient Gemini model invoker for text tasks
 const exhaustedModels = new Map<string, number>();
 
 async function generateGeminiContentWithFallback(contents: any, config?: any) {
-  // Put active, ultra-fast available models first!
-  // gemini-3.1-flash-lite has instant response times (<300ms) and active free quota.
-  const models = ['gemini-3.1-flash-lite', 'gemini-3.5-flash-lite', 'gemini-3.8-flash'];
+  // Use approved models from gemini_api skill for text tasks
+  const models = ['gemini-3.8-flash', 'gemini-3.1-flash-lite'];
   let lastError: any = null;
   const now = Date.now();
 
   for (const model of models) {
-    // Skip models known to be currently quota-exhausted to avoid 1-2s wasted HTTP round-trip latency
     const disabledUntil = exhaustedModels.get(model);
     if (disabledUntil && now < disabledUntil) {
       continue;
     }
 
-    // Clean config: Ensure no unsupported thinkingConfig causes 400 errors
     const sanitizedConfig = config ? { ...config } : {};
     if (sanitizedConfig.thinkingConfig) {
-      // Remove thinkingConfig if not explicitly needed to prevent 400 invalid argument errors across models
       delete sanitizedConfig.thinkingConfig;
     }
 
@@ -147,7 +148,6 @@ async function generateGeminiContentWithFallback(contents: any, config?: any) {
     } catch (err: any) {
       lastError = err;
       if (err.message?.includes('thinking') || err.message?.includes('Thinking') || err.status === 400) {
-        // Immediate retry without thinkingConfig
         try {
           const configWithoutThinking = { ...sanitizedConfig };
           delete configWithoutThinking.thinkingConfig;
@@ -161,7 +161,7 @@ async function generateGeminiContentWithFallback(contents: any, config?: any) {
         }
       }
       if (err.status === 429 || err.message?.includes('429') || err.message?.includes('RESOURCE_EXHAUSTED')) {
-        console.warn(`Model ${model} quota exhausted, marking disabled for 15 minutes and falling back immediately...`);
+        console.warn(`Model ${model} quota exhausted, falling back...`);
         exhaustedModels.set(model, now + 15 * 60 * 1000);
         continue;
       }
@@ -171,11 +171,58 @@ async function generateGeminiContentWithFallback(contents: any, config?: any) {
   throw lastError;
 }
 
+// Dedicated Audio Gemini invoker using models supporting audio input
+async function generateGeminiAudioContentWithFallback(contents: any, config?: any) {
+  // Per gemini_api skill: 'gemini-3.5-transcribe' or 'gemini-3.8-flash'
+  const audioModels = ['gemini-3.5-transcribe', 'gemini-3.8-flash'];
+  let lastError: any = null;
+  const now = Date.now();
+
+  for (const model of audioModels) {
+    const disabledUntil = exhaustedModels.get(model);
+    if (disabledUntil && now < disabledUntil) {
+      continue;
+    }
+
+    const sanitizedConfig = config ? { ...config } : {};
+    if (sanitizedConfig.thinkingConfig) {
+      delete sanitizedConfig.thinkingConfig;
+    }
+
+    try {
+      return await ai.models.generateContent({
+        model,
+        contents,
+        config: sanitizedConfig,
+      });
+    } catch (err: any) {
+      lastError = err;
+      if (err.status === 429 || err.message?.includes('429') || err.message?.includes('RESOURCE_EXHAUSTED')) {
+        console.warn(`Audio model ${model} quota notice, trying next...`);
+        exhaustedModels.set(model, now + 15 * 60 * 1000);
+        continue;
+      }
+      console.warn(`Audio model ${model} error:`, err?.message || err);
+    }
+  }
+  throw lastError || new Error('All audio transcription models failed');
+}
+
 // Dual-Tier NLU & Intent Parser
 app.post('/api/nlu/parse-intent', async (req, res) => {
-  const { utterance, conversationHistory = [] } = req.body;
+  const { utterance, conversationHistory = [], kernelContext } = req.body;
   if (!utterance || typeof utterance !== 'string') {
     return res.status(400).json({ error: 'Missing utterance' });
+  }
+
+  // If client provided active kernel context, update in-memory cache
+  if (kernelContext) {
+    globalInMemoryKernelContext = {
+      summaryContext: kernelContext.summaryContext || (kernelContext.instructions ? kernelContext.instructions.join('\n') : `النواة: ${kernelContext.name || 'النشطة'}`),
+      rules: kernelContext.rules || [],
+      instructions: kernelContext.instructions || [],
+      updatedAt: new Date().toISOString(),
+    };
   }
 
   const cleanText = utterance.trim().toLowerCase();
@@ -186,6 +233,23 @@ app.post('/api/nlu/parse-intent', async (req, res) => {
     return res.json(fastMatch);
   }
 
+  // Enforce Kernel Requirement: The app must NOT operate without the kernel linked
+  const isKernelLinked = Boolean(
+    globalInMemoryKernelContext &&
+    (globalInMemoryKernelContext.summaryContext || globalInMemoryKernelContext.rules?.length > 0)
+  );
+
+  if (!isKernelLinked) {
+    return res.json({
+      intent: 'INTENT_LINK_KERNEL',
+      confidence: 1.0,
+      parameters: { target: 'kernel_linker', raw_utterance: utterance },
+      ui_action: 'ROUTE_PREDEFINED',
+      assistant_response: 'النواة غير مربوطة بعد. التطبيق يعتمد كلياً على النواة ولا يعمل إلا من خلالها. يرجى ربط ملف النواة لتفعيل النظام وبدء التحدث والعمل.',
+      voice_spoken_text: 'يرجى ربط ملف النواة أولاً لتفعيل النظام والتحدث من خلاله.',
+    });
+  }
+
   // If no API key configured
   if (!apiKey || apiKey === 'MY_GEMINI_API_KEY') {
     return res.json(resolveDialectalIntent(cleanText, utterance));
@@ -193,25 +257,35 @@ app.post('/api/nlu/parse-intent', async (req, res) => {
 
   // Tier 2: Contextual Dialectal LLM Classifier using Gemini
   try {
-    const trainedContextDirective = globalInMemoryKernelContext?.summaryContext
-      ? `\nActive Loaded Kernel Memory & Learned Instructions:\n"${globalInMemoryKernelContext.summaryContext}"\nRules:\n${(globalInMemoryKernelContext.rules || []).join('\n')}\nInstructions:\n${(globalInMemoryKernelContext.instructions || []).join('\n')}\nCRITICAL: If the user tests what you learned, asks about your knowledge, or questions regarding the learned rules above, answer intelligently and accurately using this learned knowledge, and set intent to INTENT_GENERAL_QUERY!\n`
-      : '';
+    const kernelRulesList = (globalInMemoryKernelContext?.rules || []).map((r: string) => `- ${r}`).join('\n');
+    const kernelInstructionsList = (globalInMemoryKernelContext?.instructions || []).map((i: string) => `- ${i}`).join('\n');
+    const kernelSummary = globalInMemoryKernelContext?.summaryContext || '';
 
     const prompt = `
-You are the high-speed NLU, Conversational Brain, and Dialectal Intent Parser for "The Kernel" - an autonomous voice-driven operating shell.${trainedContextDirective}
-The user might speak English or various Arabic dialects (Gulf, Iraqi, Egyptian, Levantine, Maghrebi, Modern Standard Arabic) or code commands.
+أنت النواة الذكية، صوت وعقل ومحرك النواة المستقلة.
+التطبيق يعتمد في كل شيء عليك ولا يعمل إلا من خلالك، والتحدث يتم حصرياً من خلال النواة.
+قواعد النواة المحملة:
+${kernelRulesList || '- النواة الذاتية جاهزة لتنفيذ الأوامر.'}
+تعليمات النواة المحملة:
+${kernelInstructionsList || '- تقديم المساعدة والتحدث الصوتي من خلال النواة.'}
+سياق النواة المعرفي: "${kernelSummary}"
+
+المستخدم يتحدث بالعربية (بمختلف اللهجات العربية أو الفصحى) أو الإنجليزية:
+"${utterance}"
 
 Allowed INTENT_ENUM:
-- INTENT_BUILD_APP (e.g. "أريد بناء تطبيق", "تعال نبني برنامج", "افتح صفحة بناء التطبيقات", "سويلي تطبيق رياكت", "build a todo app", "create react app")
-- INTENT_GENERATE_IMAGE (e.g. "أريد صناعة صورة", "ارسم لي شاشة", "توليد الصور", "سوي تصاميم", "سويلي لوجو", "generate image of cyber terminal")
-- INTENT_GENERATE_VIDEO (e.g. "أريد صناعة مقطع فيديو", "فيديو وصوت", "اصنع فيديو سينمائي", "generate a futuristic video")
-- INTENT_TEACH_KERNEL (e.g. "لنعلم النواة", "لنعلم النوات", "افتح لتعليم النواة", "تعليم النواة", "علم النواة", "ندرب النواة")
-- INTENT_IMPORT_EXPORT (e.g. "افتح لتصدير/استيراد النواة", "ارفع ملف الـ zip", "استورد الحزمة", "unpack zip archive")
+- INTENT_BUILD_APP (e.g. "أريد بناء تطبيق", "تعال نبني برنامج", "افتح صفحة بناء التطبيقات", "build app")
+- INTENT_GENERATE_IMAGE (e.g. "أريد صناعة صورة", "ارسم لي شاشة", "توليد الصور", "generate image")
+- INTENT_GENERATE_VIDEO (e.g. "أريد صناعة مقطع فيديو", "فيديو وصوت", "generate video")
+- INTENT_TEACH_KERNEL (e.g. "لنعلم النواة", "تعليم النواة", "علم النواة", "ندرب النواة")
+- INTENT_LINK_KERNEL (e.g. "اربط النواة", "حمل النواة", "اختر ملف النواة", "link kernel")
+- INTENT_NAVIGATE_BACK (e.g. "ارجع إلى الصفحة السابقة", "رجوع", "العودة", "الصفحة الرئيسية", "go back")
 - INTENT_CLOSE_MIC (e.g. "إغلاق الميكروفون", "اسكت", "اغلق المايك", "stop listening")
-- INTENT_UNKNOWN_DYNAMIC (e.g. "افتح شاشة لإدارة قواعد البيانات", "ابني برنامج وندوز", "سوي لوحة تحكم سيرفرات", "create database manager", "monitoring dashboard")
-- INTENT_GENERAL_QUERY (General assistance, answering questions, or answering questions based on learned knowledge)
+- INTENT_GENERAL_QUERY (أي سؤال أو محادثة أو استفسار أو اختبار لما تعلمته النواة)
 
-User Utterance: "${utterance}"
+توجيهات الإجابة:
+1. في "assistant_response": أجب بذكاء تام من خلال النواة وقواعدها المحملة.
+2. في "voice_spoken_text": عبارة صوتية مقتضبة جداً وسلسة (أقل من 10 كلمات) تنطق كصوت النواة للمستخدم.
 
 Return a strict JSON response conforming to:
 {
@@ -221,9 +295,9 @@ Return a strict JSON response conforming to:
     "target": "short string describing subject",
     "raw_utterance": "${utterance}"
   },
-  "ui_action": "ROUTE_PREDEFINED" or "GENERATE_DYNAMIC_UI" or "EXECUTE_SYSTEM_ACTION",
-  "assistant_response": "Arabic or English response acknowledging the user politely and concisely in the same language/dialect style",
-  "voice_spoken_text": "Very concise, smooth spoken phrase (max 12 words) to be read out via TTS"
+  "ui_action": "ROUTE_PREDEFINED",
+  "assistant_response": "إجابة النواة الذكية بالعربية المبنية على قواعدها وسياقها",
+  "voice_spoken_text": "عبارة النواة الصوتية المقتضبة (أقل من 10 كلمات)"
 }
 `;
 
@@ -254,10 +328,8 @@ Return a strict JSON response conforming to:
     });
 
     const response = await Promise.race([callPromise, timeoutPromise]);
-
     const parsed = JSON.parse(response.text || '{}');
 
-    // Normalize intent name strictly to prevent false triggers
     let intentKey = (parsed.intent || '').toUpperCase();
     const validIntents = [
       'INTENT_BUILD_APP',
@@ -269,6 +341,7 @@ Return a strict JSON response conforming to:
       'INTENT_CONNECT_GITHUB',
       'INTENT_CONNECT_SUPABASE',
       'INTENT_LINK_KERNEL',
+      'INTENT_NAVIGATE_BACK',
       'INTENT_UNKNOWN_DYNAMIC',
       'INTENT_GENERAL_QUERY',
     ];
@@ -342,43 +415,45 @@ async function processAudioWithGemini(
   );
 
   const activeContext = contextOverride || globalInMemoryKernelContext?.summaryContext || '';
+  const kernelRulesList = (globalInMemoryKernelContext?.rules || []).map((r: string) => `- ${r}`).join('\n');
+  const kernelInstructionsList = (globalInMemoryKernelContext?.instructions || []).map((i: string) => `- ${i}`).join('\n');
+
   const contextDirective = activeContext
-    ? `\nActive Loaded Kernel In-Memory Context & Rules:\n"${activeContext}"\nConsider this context when interpreting dialect, intent, or requested commands.\n`
+    ? `\nأنت صوت وعقل النواة الذكية. سياق وقواعد النواة المحملة:\n"${activeContext}"\nقواعد النواة:\n${kernelRulesList}\nتعليمات النواة:\n${kernelInstructionsList}\nالتحدث والإجابة يتم حصرياً بصفة النواة.\n`
     : '';
 
-  const prompt = `Listen to this user spoken audio recording carefully. The user might speak Arabic dialect (Gulf, Iraqi, Egyptian, Levantine, Maghrebi, Modern Standard) or English.${contextDirective}
-1. Transcribe the exact words spoken into text.
-2. Identify the intent:
-   - "INTENT_BUILD_APP": user explicitly asks to open app builder or build an app (e.g. "افتح صفحة بناء التطبيقات", "ابني تطبيق", "بناء تطبيق", "طور تطبيق", "build app")
-   - "INTENT_GENERATE_IMAGE": user asks to open image studio or generate an image (e.g. "افتح صفحة الصور", "توليد الصور", "انشاء صورة", "صمم صورة", "generate image")
-   - "INTENT_CREATE_GAME": user asks to open game studio or make a game (e.g. "افتح صفحة الالعاب", "انشاء لعبة", "اصنع لعبة", "create game")
-   - "INTENT_CREATE_MEDIA": user asks to open video/audio studio (e.g. "افتح صفحة الفيديو", "انشاء فيديو", "فيديو وصوت")
-   - "INTENT_CONNECT_GITHUB": user asks to open github bridge (e.g. "افتح صفحة جيت هب", "ربط جيت هب", "github")
-   - "INTENT_CONNECT_SUPABASE": user asks to open supabase bridge (e.g. "افتح صفحة سوبابيس", "ربط سوبابيس", "supabase")
-   - "INTENT_LINK_KERNEL": user asks to link kernel file (e.g. "اربط النواة", "اختر ملف النواة", "link kernel")
-   - "INTENT_TEACH_KERNEL": user explicitly asks to open kernel teaching page (e.g. "لنعلم النواة", "لنعلم النوات", "تعليم النواة", "تدريب النواة", "علم النواة", "teach kernel")
-   - "INTENT_CLOSE_MIC": user asks to mute or stop mic (e.g. "إغلاق الميكروفون", "اسكت", "اغلق المايك", "stop mic")
-   - "INTENT_GENERAL_QUERY": all other general speech, conversations, questions, or testing what the kernel learned.
+  const prompt = `استمع لهذا التسجيل الصوتي بدقة. المستخدم يتحدث بالعربية (بمختلف اللهجات العربية أو الفصحى) أو الإنجليزية.${contextDirective}
+1. قم بنسخ وتفريغ الكلمات المنطوقة بدقة بالغة إلى "transcript".
+2. حدد القصد:
+   - "INTENT_BUILD_APP": طلب فتح صفحة بناء التطبيقات (e.g. "افتح صفحة بناء التطبيقات", "ابني تطبيق", "build app")
+   - "INTENT_GENERATE_IMAGE": طلب فتح استوديو الصور (e.g. "افتح صفحة الصور", "توليد الصور", "generate image")
+   - "INTENT_CREATE_GAME": طلب فتح استوديو الألعاب (e.g. "افتح صفحة الالعاب", "انشاء لعبة", "create game")
+   - "INTENT_CREATE_MEDIA": طلب استوديو الفيديو (e.g. "افتح صفحة الفيديو", "انشاء فيديو")
+   - "INTENT_CONNECT_GITHUB": طلب ربط جيت هب (e.g. "افتح صفحة جيت هب", "ربط جيت هب", "github")
+   - "INTENT_CONNECT_SUPABASE": طلب ربط سوبابيس (e.g. "افتح صفحة سوبابيس", "ربط سوبابيس", "supabase")
+   - "INTENT_LINK_KERNEL": طلب ربط ملف النواة (e.g. "اربط النواة", "اختر ملف النواة", "link kernel")
+   - "INTENT_TEACH_KERNEL": طلب صفحة تعليم النواة (e.g. "لنعلم النواة", "تعليم النواة", "teach kernel")
+   - "INTENT_NAVIGATE_BACK": طلب الرجوع (e.g. "ارجع", "رجوع", "العودة", "الصفحة الرئيسية", "back")
+   - "INTENT_CLOSE_MIC": طلب إيقاف التحدث أو المايك (e.g. "إغلاق الميكروفون", "اسكت", "stop mic")
+   - "INTENT_GENERAL_QUERY": جميع المحادثات والأسئلة العامة والاختبارات لقواعد ومعارف النواة.
 
-CRITICAL INSTRUCTIONS FOR INTENT_GENERAL_QUERY:
-If the user is asking a question, testing what the kernel learned, or chatting:
-- Provide an intelligent, direct Arabic answer in "assistant_response" reflecting the Active Loaded Kernel In-Memory Context & Rules!
-- Provide a clear, polite spoken Arabic sentence in "voice_spoken_text" (max 12 words) to be voiced aloud.
-
-If the audio is completely silent or background noise with no speech, set "transcript" to "" and "intent" to "INTENT_GENERAL_QUERY".
+تعليمات الإجابة:
+- في "assistant_response": أجب بذكاء من خلال النواة وقواعدها المحملة.
+- في "voice_spoken_text": عبارة صوتية مقتضبة جداً وسلسة (أقل من 10 كلمات) تنطق كصوت النواة للمستخدم.
+- إذا كان التسجيل صامتاً تماماً أو ضوضاء فقط، اجعل "transcript" فارغاً "".
 
 Return a strict JSON object:
 {
-  "transcript": "the transcribed words in Arabic or English",
+  "transcript": "الكلمات المنطوقة بالعربية أو الإنجليزية",
   "intent": "INTENT_ENUM",
   "confidence": 0.96,
   "ui_action": "ROUTE_PREDEFINED",
-  "assistant_response": "concise polite Arabic acknowledgment confirming the action or answering their question",
-  "voice_spoken_text": "short spoken Arabic sentence to be voiced via speech synthesis (max 10 words)"
+  "assistant_response": "إجابة النواة الذكية بالعربية",
+  "voice_spoken_text": "عبارة النواة الصوتية المقتضبة (أقل من 10 كلمات)"
 }`;
 
   try {
-    const callPromise = generateGeminiContentWithFallback(
+    const callPromise = generateGeminiAudioContentWithFallback(
       {
         parts: [audioPart, { text: prompt }],
       },
@@ -419,13 +494,14 @@ Return a strict JSON object:
     console.warn('Audio processing warning:', err.message);
   }
 
+  // Silence, background noise, or processing failure: NEVER speak phantom phrases!
   return {
     transcript: '',
     intent: 'INTENT_GENERAL_QUERY',
-    confidence: 0.5,
+    confidence: 0,
     ui_action: 'ROUTE_PREDEFINED',
-    assistant_response: 'أنا أستمع إليك، تفضل بأمرك.',
-    voice_spoken_text: 'تفضل بأمرك.',
+    assistant_response: '',
+    voice_spoken_text: '',
   };
 }
 
@@ -573,11 +649,28 @@ app.post('/api/kernel/session-init', (req, res) => {
 app.post('/api/voice/process-audio', async (req, res) => {
   const { audioBase64, mimeType = 'audio/wav', kernelContext } = req.body;
   if (!audioBase64 || audioBase64.length < 300) {
-    return res.json({ transcript: '', intent: 'INTENT_GENERAL_QUERY' });
+    return res.json({
+      transcript: '',
+      intent: 'INTENT_GENERAL_QUERY',
+      confidence: 0,
+      ui_action: 'ROUTE_PREDEFINED',
+      assistant_response: '',
+      voice_spoken_text: '',
+    });
   }
 
   const contextToUse = kernelContext || globalInMemoryKernelContext?.summaryContext;
   const result = await processAudioWithGemini(audioBase64, mimeType, contextToUse);
+  if (!result.transcript || !result.transcript.trim()) {
+    return res.json({
+      transcript: '',
+      intent: 'INTENT_GENERAL_QUERY',
+      confidence: 0,
+      ui_action: 'ROUTE_PREDEFINED',
+      assistant_response: '',
+      voice_spoken_text: '',
+    });
+  }
   return res.json(result);
 });
 

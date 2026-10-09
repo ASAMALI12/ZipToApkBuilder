@@ -31,6 +31,10 @@ export async function unpackZipFile(file: File | Blob | ArrayBuffer): Promise<Pr
   const files: ProjectFile[] = [];
   const entries = Object.keys(loadedZip.files);
 
+  if (entries.length === 0) {
+    throw new Error('الملف المضغوط فارغ ولا يحتوي على أي ملفات صالحة للنواة.');
+  }
+
   for (const filename of entries) {
     const zipEntry = loadedZip.files[filename];
     if (zipEntry.dir) continue; // skip directory entries
@@ -68,11 +72,6 @@ export async function initOrExtractZipKernel(
   fileOrBlob: File | Blob | ArrayBuffer,
   fileNameHint: string = 'kernel.zip'
 ): Promise<CachedKernelContext> {
-  // If already cached in memory for this session, return cached state immediately
-  if (inMemoryZipKernelContext && inMemoryZipKernelContext.isLoaded) {
-    return inMemoryZipKernelContext;
-  }
-
   const files = await unpackZipFile(fileOrBlob);
   let kernelName = fileNameHint.replace(/\.[^/.]+$/, '') || 'QuantumKernel';
   let version = '3.4.0';

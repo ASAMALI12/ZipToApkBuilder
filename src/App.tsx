@@ -42,64 +42,58 @@ export default function App() {
     }
 
     if (intent === 'INTENT_CLOSE_MIC') {
+      audioEngine.interruptSpeech();
       audioEngine.safeStopMicrophone();
       setLastAssistantResponse('تم إيقاف الميكروفون وحفظ طاقة النواة.');
       return;
     }
 
-    // Only switch the workspace screen if the user explicitly asked to open/navigate to it
-    const isExplicitOpen = rawUtterance ? /(?:افتح|انتقل|شاشة|شاشه|صفحة|صفحه|استوديو|قسم)/i.test(rawUtterance) : false;
+    if (
+      intent === 'INTENT_NAVIGATE_BACK' ||
+      (rawUtterance && /(?:ارجع|العود[ةه]|رجوع|الصفح[ةه]\s+السابق[ةه]|الرئيسي[ةه]|go\s+back|back)/i.test(rawUtterance))
+    ) {
+      setActiveWorkspace('home');
+      setActiveActionNotice(null);
+      return;
+    }
 
-    if (intent === 'INTENT_TEACH_KERNEL') {
+    if (intent === 'INTENT_LINK_KERNEL') {
+      setActiveActionNotice({ name: 'ربط ملف النواة من الهاتف', workspace: 'kernel_linker' });
+      setActiveWorkspace('kernel_linker');
+    } else if (intent === 'INTENT_TEACH_KERNEL') {
       setActiveActionNotice({ name: 'صفحة تعليم وتدريب النواة', workspace: 'kernel_trainer' });
-      if (isExplicitOpen) setActiveWorkspace('kernel_trainer');
+      setActiveWorkspace('kernel_trainer');
     } else if (intent === 'INTENT_BUILD_APP') {
       setActiveActionNotice({ name: 'صفحة بناء وتطوير التطبيقات', workspace: 'app_builder' });
-      if (isExplicitOpen) setActiveWorkspace('app_builder');
+      setActiveWorkspace('app_builder');
     } else if (intent === 'INTENT_GENERATE_IMAGE') {
       setActiveActionNotice({ name: 'استوديو توليد وتصميم الصور', workspace: 'image_generator' });
-      if (isExplicitOpen) setActiveWorkspace('image_generator');
+      setActiveWorkspace('image_generator');
     } else if (intent === 'INTENT_CREATE_GAME') {
       setActiveActionNotice({ name: 'استوديو صناعة وبرمجة الألعاب', workspace: 'game_builder' });
-      if (isExplicitOpen) setActiveWorkspace('game_builder');
+      setActiveWorkspace('game_builder');
     } else if (intent === 'INTENT_CREATE_MEDIA') {
       setActiveActionNotice({ name: 'استوديو إنتاج الفيديو والصوت', workspace: 'media_studio' });
-      if (isExplicitOpen) setActiveWorkspace('media_studio');
+      setActiveWorkspace('media_studio');
     } else if (intent === 'INTENT_CONNECT_GITHUB') {
       setActiveActionNotice({ name: 'ربط منصة جيت هب', workspace: 'github_bridge' });
-      if (isExplicitOpen) setActiveWorkspace('github_bridge');
+      setActiveWorkspace('github_bridge');
     } else if (intent === 'INTENT_CONNECT_SUPABASE') {
       setActiveActionNotice({ name: 'ربط قواعد بيانات سوبابيس', workspace: 'supabase_bridge' });
-      if (isExplicitOpen) setActiveWorkspace('supabase_bridge');
-    } else if (intent === 'INTENT_LINK_KERNEL') {
-      setActiveActionNotice({ name: 'ربط ملف النواة من الهاتف', workspace: 'kernel_linker' });
-      if (isExplicitOpen) setActiveWorkspace('kernel_linker');
+      setActiveWorkspace('supabase_bridge');
     } else {
-      // General Query / Knowledge test / Chat: stay on home and converse!
+      // General Query / Knowledge test / Chat: stay on current screen and converse!
       setActiveActionNotice(null);
     }
   }, []);
 
-  // Autonomous Intent Processing via Voice or Text Chat Box
+  // Autonomous Intent Processing via Voice or Text Chat Box (Unified Single Path)
   const processIntentExecution = useCallback(
     async (utteranceText: string) => {
       if (!utteranceText.trim()) return;
-
-      setCurrentTranscript(utteranceText.trim());
-      const parsed = await parseUtterance(utteranceText);
-      applyIntentRouting(parsed.intent, parsed.assistant_response, parsed.voice_spoken_text, utteranceText);
-
-      // Voice TTS feedback
-      if (parsed.voice_spoken_text) {
-        const base64Wav = await requestTTSAudio(parsed.voice_spoken_text);
-        if (base64Wav) {
-          await audioEngine.playTTSAudioBase64(base64Wav);
-        } else {
-          await audioEngine.playFallbackSpeech(parsed.voice_spoken_text);
-        }
-      }
+      await audioEngine.handleDirectTextUtterance(utteranceText.trim());
     },
-    [applyIntentRouting]
+    []
   );
 
   // Audio Engine Lifecycle Listeners
@@ -159,6 +153,13 @@ export default function App() {
   const handleBindKernel = (kernel: BoundKernel | null) => {
     setBoundKernel(kernel);
     StorageEngine.saveBoundKernel(kernel);
+    if (kernel) {
+      const confirmText = `تم ربط النواة "${kernel.name}" بنجاح (${kernel.rules?.length || 0} قواعد نشطة). التطبيق الآن يعمل ويعتمد كلياً على النواة.`;
+      setLastAssistantResponse(confirmText);
+      audioEngine.speak(`تم ربط النواة ${kernel.name} بنجاح. أنا جاهز للعمل والتحدث من خلال النواة.`);
+    } else {
+      setLastAssistantResponse('تم فك ربط النواة. يرجى ربط ملف نواة جديد لتفعيل النظام.');
+    }
   };
 
   return (

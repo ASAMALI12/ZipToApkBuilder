@@ -11,6 +11,7 @@ import {
   AlertTriangle,
   Send,
   PhoneOff,
+  Square,
 } from 'lucide-react';
 
 interface CentralCallOrbProps {
@@ -129,8 +130,18 @@ export const CentralCallOrb: React.FC<CentralCallOrbProps> = ({
   const handleToggleCall = async () => {
     setPermissionError(null);
     try {
+      if (!boundKernel || !boundKernel.isActive) {
+        if (onOpenWorkspace) {
+          onOpenWorkspace('kernel_linker');
+          return;
+        }
+      }
+
       if (callStatus === 'IDLE') {
         await audioEngine.safeStartMicrophone();
+      } else if (callStatus === 'SPEAKING' || callStatus === 'BARGE_IN') {
+        // Instant Barge-In Interruption on user click/tap
+        audioEngine.interruptSpeech();
       } else if (callStatus === 'LISTENING') {
         await audioEngine.commitCurrentUtterance();
       } else if (callStatus === 'THINKING') {
@@ -150,6 +161,17 @@ export const CentralCallOrb: React.FC<CentralCallOrbProps> = ({
     if (e) e.preventDefault();
     if (!chatInput.trim()) return;
 
+    if (!boundKernel || !boundKernel.isActive) {
+      const norm = chatInput.trim().toLowerCase();
+      if (/(?:نربط|اربط|ربط|حمل|تحميل|اختر|ملف|link|kernel)/i.test(norm)) {
+        onQuickIntent(chatInput.trim());
+      } else {
+        onQuickIntent('اربط النواة');
+      }
+      setChatInput('');
+      return;
+    }
+
     onQuickIntent(chatInput.trim());
     setChatInput('');
   };
@@ -158,10 +180,26 @@ export const CentralCallOrb: React.FC<CentralCallOrbProps> = ({
     <div className="relative flex-1 flex flex-col items-center justify-between min-h-[90vh] px-4 py-5 select-none font-arabic">
       {/* Top Subtle Status Badge */}
       <div className="w-full max-w-md flex items-center justify-between pt-1 z-20">
-        <div className="flex items-center gap-2 px-3 py-1 bg-slate-900/60 border border-slate-800/80 rounded-full text-xs text-slate-400">
-          <Cpu className="w-3.5 h-3.5 text-cyan-400" />
-          <span>{boundKernel ? boundKernel.name : 'النواة الذاتية المستقلة'}</span>
-        </div>
+        {boundKernel ? (
+          <button
+            onClick={() => onOpenWorkspace && onOpenWorkspace('kernel_linker')}
+            className="flex items-center gap-2 px-3 py-1 bg-cyan-950/70 border border-cyan-500/50 rounded-full text-xs text-cyan-200 hover:border-cyan-400 transition-colors cursor-pointer"
+            title="النواة مرتبطة ونشطة - اضغط لإدارة النواة"
+          >
+            <Cpu className="w-3.5 h-3.5 text-cyan-400" />
+            <span>النواة: <strong>{boundKernel.name}</strong></span>
+            <span className="text-[10px] text-cyan-400 font-mono">({boundKernel.rules?.length || 0} قواعد)</span>
+          </button>
+        ) : (
+          <button
+            onClick={() => onOpenWorkspace && onOpenWorkspace('kernel_linker')}
+            className="flex items-center gap-1.5 px-3 py-1 bg-amber-500/10 border border-amber-500/40 hover:bg-amber-500/20 rounded-full text-xs text-amber-300 transition-colors cursor-pointer animate-pulse"
+            title="اضغط لربط ملف النواة لتفعيل التطبيق"
+          >
+            <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />
+            <span>النواة غير مرتبطة ⚠️ (اضغط للربط)</span>
+          </button>
+        )}
 
         <div className="flex items-center gap-1.5 text-[11px] font-mono text-slate-400">
           <span className={`w-2 h-2 rounded-full ${
@@ -169,9 +207,36 @@ export const CentralCallOrb: React.FC<CentralCallOrbProps> = ({
             callStatus === 'SPEAKING' ? 'bg-purple-400 animate-ping' :
             callStatus === 'THINKING' ? 'bg-amber-400' : 'bg-slate-600'
           }`} />
-          <span>{callStatus === 'LISTENING' ? 'المايك متصل' : callStatus === 'SPEAKING' ? 'تتحدث' : 'جاهز'}</span>
+          <span>
+            {!boundKernel
+              ? 'يتطلب ربط النواة'
+              : callStatus === 'LISTENING'
+              ? 'صوت النواة يستمع'
+              : callStatus === 'SPEAKING'
+              ? 'صوت النواة يتحدث'
+              : 'النواة جاهزة'}
+          </span>
         </div>
       </div>
+
+      {/* Unbound Kernel Warning & Direct Link Banner */}
+      {!boundKernel && (
+        <div className="w-full max-w-md my-2 p-3 bg-gradient-to-r from-amber-950/70 via-slate-900 to-amber-950/70 border border-amber-500/40 rounded-2xl flex flex-col items-center text-center shadow-lg z-20 animate-in fade-in duration-300">
+          <div className="flex items-center gap-2 text-amber-300 font-bold text-xs mb-1">
+            <AlertTriangle className="w-4 h-4 text-amber-400" />
+            <span>التطبيق لا يعمل إلا من خلال ربط النواة</span>
+          </div>
+          <p className="text-[11px] text-slate-300 mb-2">
+            يرجى ربط ملف النواة (ZIP أو JSON) لتفعيل الفهم والذكاء والتحدث الصوتي من خلال النواة.
+          </p>
+          <button
+            onClick={() => onOpenWorkspace && onOpenWorkspace('kernel_linker')}
+            className="px-4 py-1.5 bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-slate-950 text-xs font-bold rounded-xl transition-all shadow-md active:scale-95 cursor-pointer"
+          >
+            ربط ملف النواة الآن (Link Kernel)
+          </button>
+        </div>
+      )}
 
       {/* Center Ambient Glow */}
       <div
@@ -225,12 +290,14 @@ export const CentralCallOrb: React.FC<CentralCallOrbProps> = ({
 
             <span className="text-xs font-bold tracking-wider transition-colors">
               {callStatus === 'IDLE' && (
-                <span className="text-slate-300 group-hover:text-white">اضغط للتحدث</span>
+                <span className={boundKernel ? "text-slate-300 group-hover:text-white" : "text-amber-300 font-bold"}>
+                  {boundKernel ? "تحدث عبر النواة" : "اضغط لربط النواة"}
+                </span>
               )}
               {callStatus === 'STARTING' && <span className="text-yellow-400">تشغيل المايك...</span>}
-              {callStatus === 'LISTENING' && <span className="text-cyan-300">أنا أستمع إليك</span>}
-              {callStatus === 'THINKING' && <span className="text-amber-300 animate-pulse">جاري الفهم...</span>}
-              {callStatus === 'SPEAKING' && <span className="text-purple-300">النواة تتحدث...</span>}
+              {callStatus === 'LISTENING' && <span className="text-cyan-300">النواة تستمع إليك</span>}
+              {callStatus === 'THINKING' && <span className="text-amber-300 animate-pulse">النواة تعالج الأمر...</span>}
+              {callStatus === 'SPEAKING' && <span className="text-purple-300">صوت النواة يتحدث...</span>}
               {callStatus === 'BARGE_IN' && <span className="text-rose-400">مقاطعة الصوت!</span>}
               {callStatus === 'STOPPING' && <span className="text-yellow-400">إيقاف المايك...</span>}
             </span>
@@ -244,16 +311,29 @@ export const CentralCallOrb: React.FC<CentralCallOrbProps> = ({
           </button>
         </div>
 
-        {/* End Call Button when call is active */}
+        {/* Voice Control Buttons when call is active */}
         {callStatus !== 'IDLE' && (
-          <button
-            onClick={handleEndCall}
-            className="mt-2 px-3.5 py-1 rounded-full bg-rose-950/70 hover:bg-rose-900 border border-rose-500/40 text-rose-300 text-xs flex items-center gap-1.5 transition-all cursor-pointer shadow-lg active:scale-95 z-20"
-            title="إنهاء المكالمة"
-          >
-            <PhoneOff className="w-3 h-3 text-rose-400" />
-            <span>إيقاف المايك</span>
-          </button>
+          <div className="flex items-center gap-2 mt-2 z-20">
+            {callStatus === 'SPEAKING' && (
+              <button
+                onClick={() => audioEngine.interruptSpeech()}
+                className="px-4 py-1.5 rounded-full bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold flex items-center gap-1.5 transition-all cursor-pointer shadow-lg shadow-rose-600/40 active:scale-95 animate-pulse"
+                title="مقاطعة الصوت فوراً"
+              >
+                <Square className="w-3.5 h-3.5 fill-current" />
+                <span>مقاطعة الصوت (اسكت)</span>
+              </button>
+            )}
+
+            <button
+              onClick={handleEndCall}
+              className="px-3.5 py-1.5 rounded-full bg-rose-950/70 hover:bg-rose-900 border border-rose-500/40 text-rose-300 text-xs flex items-center gap-1.5 transition-all cursor-pointer shadow-lg active:scale-95"
+              title="إنهاء المكالمة"
+            >
+              <PhoneOff className="w-3 h-3 text-rose-400" />
+              <span>إيقاف المايك</span>
+            </button>
+          </div>
         )}
 
         {/* Live Conversation Stream (User Utterance + Kernel Voice Reply) */}
