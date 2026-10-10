@@ -66,10 +66,9 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: 'npm'
 
       - name: Install Dependencies
-        run: npm ci || npm install
+        run: npm install --legacy-peer-deps
 
       - name: Run TypeScript Typecheck & Lint
         run: npm run lint
@@ -87,10 +86,9 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: 'npm'
 
       - name: Install Dependencies
-        run: npm ci || npm install
+        run: npm install --legacy-peer-deps
 
       - name: Compile Production Web App
         run: npm run build
@@ -121,11 +119,10 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: 'npm'
 
       - name: Install Dependencies & Compile App
         run: |
-          npm ci || npm install
+          npm install --legacy-peer-deps
           npm run build
 
       - name: Package Android Distribution Bundle
@@ -175,10 +172,9 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: 'npm'
 
       - name: Install Dependencies
-        run: npm ci || npm install
+        run: npm install --legacy-peer-deps
 
       - name: Lint & Typecheck Codebase
         run: npm run lint
@@ -214,7 +210,7 @@ jobs:
 
       - name: Install Dependencies & Build Web Assets
         run: |
-          npm ci || npm install
+          npm install --legacy-peer-deps
           npm run build
 
       - name: Package Android Distribution Bundle
