@@ -12,7 +12,14 @@ import {
   Send,
   PhoneOff,
   Square,
+  Sliders,
+  ShieldCheck,
+  HelpCircle,
+  BookOpen,
+  Wrench,
+  X,
 } from 'lucide-react';
+import { KernelDiagnosticReport } from '../../types/kernel';
 
 interface CentralCallOrbProps {
   onQuickIntent: (phrase: string) => void;
@@ -21,6 +28,8 @@ interface CentralCallOrbProps {
   boundKernel: BoundKernel | null;
   lastAssistantResponse?: string;
   activeActionNotice?: { name: string; workspace: string } | null;
+  activeDiagnostic?: KernelDiagnosticReport | null;
+  onClearDiagnostic?: () => void;
   onOpenWorkspace?: (workspace: string) => void;
 }
 
@@ -31,6 +40,8 @@ export const CentralCallOrb: React.FC<CentralCallOrbProps> = ({
   boundKernel,
   lastAssistantResponse,
   activeActionNotice,
+  activeDiagnostic,
+  onClearDiagnostic,
   onOpenWorkspace,
 }) => {
   const [callStatus, setCallStatus] = useState<CallStatus>(audioEngine.getStatus());
@@ -38,6 +49,13 @@ export const CentralCallOrb: React.FC<CentralCallOrbProps> = ({
   const [outputEnergy, setOutputEnergy] = useState<number>(0);
   const [permissionError, setPermissionError] = useState<string | null>(null);
   const [chatInput, setChatInput] = useState<string>('');
+  const [sensitivityPreset, setSensitivityPreset] = useState<'HIGH' | 'NORMAL' | 'NOISE_ISOLATION'>('HIGH');
+  const [showSensitivityModal, setShowSensitivityModal] = useState<boolean>(false);
+
+  const handleSensitivityChange = (level: 'HIGH' | 'NORMAL' | 'NOISE_ISOLATION') => {
+    setSensitivityPreset(level);
+    audioEngine.setSensitivity(level);
+  };
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
@@ -159,20 +177,10 @@ export const CentralCallOrb: React.FC<CentralCallOrbProps> = ({
 
   const handleSendChat = (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    if (!chatInput.trim()) return;
+    const text = chatInput.trim();
+    if (!text) return;
 
-    if (!boundKernel || !boundKernel.isActive) {
-      const norm = chatInput.trim().toLowerCase();
-      if (/(?:نربط|اربط|ربط|حمل|تحميل|اختر|ملف|link|kernel)/i.test(norm)) {
-        onQuickIntent(chatInput.trim());
-      } else {
-        onQuickIntent('اربط النواة');
-      }
-      setChatInput('');
-      return;
-    }
-
-    onQuickIntent(chatInput.trim());
+    onQuickIntent(text);
     setChatInput('');
   };
 
@@ -378,6 +386,90 @@ export const CentralCallOrb: React.FC<CentralCallOrbProps> = ({
             </div>
           )}
 
+          {/* Diagnostic Breakdown Card (Shows when command cannot be executed) */}
+          {activeDiagnostic && activeDiagnostic.hasDefect && (
+            <div className="p-4 rounded-2xl border transition-all text-right shadow-2xl animate-in fade-in zoom-in-95 duration-200 bg-slate-900/95 border-amber-500/50">
+              <div className="flex items-center justify-between pb-2 border-b border-slate-800 mb-2.5">
+                <div className="flex items-center gap-2">
+                  <span className={`px-2.5 py-0.5 rounded-full text-[11px] font-bold font-mono ${
+                    activeDiagnostic.origin === 'KERNEL'
+                      ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40'
+                      : 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
+                  }`}>
+                    {activeDiagnostic.origin === 'KERNEL' ? '🧠 الخلل في النواة (Kernel)' : '⚙️ الخلل في المحرك (Engine)'}
+                  </span>
+                  <span className="text-xs font-bold text-white">{activeDiagnostic.title}</span>
+                </div>
+                {onClearDiagnostic && (
+                  <button
+                    onClick={onClearDiagnostic}
+                    className="text-slate-400 hover:text-white p-1 rounded-lg cursor-pointer"
+                    title="إغلاق التقرير"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+
+              {activeDiagnostic.commandRequested && (
+                <p className="text-[11px] text-slate-400 mb-2">
+                  الأمر المطلوب: <span className="text-cyan-300 font-mono">"{activeDiagnostic.commandRequested}"</span>
+                </p>
+              )}
+
+              <div className="space-y-2 text-xs">
+                <div className="p-2.5 rounded-xl bg-slate-950/70 border border-slate-800">
+                  <div className="text-[11px] font-bold text-amber-400 mb-0.5 flex items-center gap-1.5">
+                    <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />
+                    <span>سبب الخلل وعدم القدرة على التنفيذ:</span>
+                  </div>
+                  <p className="text-slate-200 leading-relaxed text-[11px]">
+                    {activeDiagnostic.cause}
+                  </p>
+                </div>
+
+                <div className="p-2.5 rounded-xl bg-cyan-950/30 border border-cyan-500/30">
+                  <div className="text-[11px] font-bold text-cyan-300 mb-0.5 flex items-center gap-1.5">
+                    <Wrench className="w-3.5 h-3.5 text-cyan-400" />
+                    <span>الحل والإجراء المطلوب:</span>
+                  </div>
+                  <p className="text-slate-200 leading-relaxed text-[11px]">
+                    {activeDiagnostic.suggestedAction}
+                  </p>
+                </div>
+              </div>
+
+              {/* Action Buttons for Diagnostic */}
+              <div className="flex items-center gap-2 mt-3 pt-2 border-t border-slate-800/80">
+                {activeDiagnostic.defectType === 'KERNEL_KNOWLEDGE_MISSING' && onOpenWorkspace && (
+                  <button
+                    onClick={() => onOpenWorkspace('kernel_trainer')}
+                    className="flex-1 py-2 px-3 bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-xs rounded-xl transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-md"
+                  >
+                    <Sparkles className="w-3.5 h-3.5" />
+                    <span>تعليم وتدريب النواة الآن (Teach Kernel)</span>
+                  </button>
+                )}
+
+                {activeDiagnostic.defectType === 'KERNEL_LIBRARY_REQUIRED' && onOpenWorkspace && (
+                  <button
+                    onClick={() => onOpenWorkspace('kernel_trainer')}
+                    className="flex-1 py-2 px-3 bg-purple-500 hover:bg-purple-400 text-white font-bold text-xs rounded-xl transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-md"
+                  >
+                    <BookOpen className="w-3.5 h-3.5" />
+                    <span>إرفاق مكتبة للنواة (Attach Library)</span>
+                  </button>
+                )}
+
+                {activeDiagnostic.origin === 'ENGINE' && (
+                  <div className="text-[10px] text-slate-400 font-mono w-full text-center">
+                    قيود البيئة التشغيلية للمحرك (Engine Sandbox Boundary)
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* Active Workspace / Action Notice Banner */}
           {activeActionNotice && onOpenWorkspace && (
             <div className="px-3.5 py-2.5 rounded-2xl bg-cyan-950/60 border border-cyan-500/40 flex items-center justify-between shadow-lg animate-in fade-in duration-300">
@@ -400,6 +492,52 @@ export const CentralCallOrb: React.FC<CentralCallOrbProps> = ({
               <span>{permissionError}</span>
             </div>
           )}
+        </div>
+      </div>
+
+      {/* Sensitivity & Anti-Cutoff Toolbar */}
+      <div className="w-full max-w-lg z-20 px-1 mb-2">
+        <div className="flex items-center justify-between text-xs bg-slate-900/60 p-1.5 rounded-2xl border border-slate-800">
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => handleSensitivityChange('HIGH')}
+              className={`px-2.5 py-1 rounded-xl text-[11px] font-bold transition-all cursor-pointer ${
+                sensitivityPreset === 'HIGH'
+                  ? 'bg-cyan-500 text-slate-950 shadow-md'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+              title="مهلة 1100ms - تمنع انقطاع الصوت تماماً أثناء التحدث والتردد"
+            >
+              حساسية فائقة (مانع التقطيع)
+            </button>
+            <button
+              onClick={() => handleSensitivityChange('NORMAL')}
+              className={`px-2.5 py-1 rounded-xl text-[11px] font-bold transition-all cursor-pointer ${
+                sensitivityPreset === 'NORMAL'
+                  ? 'bg-cyan-500 text-slate-950 shadow-md'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+              title="مهلة 850ms - متوازنة وطبيعية"
+            >
+              متوازنة (850ms)
+            </button>
+            <button
+              onClick={() => handleSensitivityChange('NOISE_ISOLATION')}
+              className={`px-2.5 py-1 rounded-xl text-[11px] font-bold transition-all cursor-pointer ${
+                sensitivityPreset === 'NOISE_ISOLATION'
+                  ? 'bg-cyan-500 text-slate-950 shadow-md'
+                  : 'text-slate-400 hover:text-white'
+              }`}
+              title="مهلة 600ms - استجابة سريعة"
+            >
+              سريعة
+            </button>
+          </div>
+
+          <div className="flex items-center gap-1 text-[10px] text-emerald-400 font-mono pr-2">
+            <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+            <span>مانع التقطيع نشط</span>
+          </div>
         </div>
       </div>
 

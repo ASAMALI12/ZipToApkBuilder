@@ -9,10 +9,13 @@ import {
 
 interface ImageGeneratorViewProps {
   onBackToHome: () => void;
+  initialPrompt?: string;
 }
 
-export const ImageGeneratorView: React.FC<ImageGeneratorViewProps> = ({ onBackToHome }) => {
-  const [prompt, setPrompt] = useState('شاشة مستقبلية مضيئة للذكاء الاصطناعي مع دوائر نيون زرقاء');
+export const ImageGeneratorView: React.FC<ImageGeneratorViewProps> = ({ onBackToHome, initialPrompt }) => {
+  const [prompt, setPrompt] = useState(
+    initialPrompt || 'شاشة مستقبلية مضيئة للذكاء الاصطناعي مع دوائر نيون زرقاء'
+  );
   const [aspectRatio, setAspectRatio] = useState('1:1');
   const [isGenerating, setIsGenerating] = useState(false);
   const [generationNotice, setGenerationNotice] = useState<string | null>(null);
@@ -36,8 +39,9 @@ export const ImageGeneratorView: React.FC<ImageGeneratorViewProps> = ({ onBackTo
     return `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(svg)))}`;
   });
 
-  const handleGenerate = async () => {
-    if (!prompt.trim() || isGenerating) return;
+  const handleGenerate = async (customText?: string) => {
+    const textToUse = (customText || prompt).trim();
+    if (!textToUse || isGenerating) return;
     setIsGenerating(true);
     setGenerationNotice(null);
 
@@ -45,7 +49,7 @@ export const ImageGeneratorView: React.FC<ImageGeneratorViewProps> = ({ onBackTo
       const res = await fetch('/api/media/generate-image', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: prompt.trim(), aspectRatio }),
+        body: JSON.stringify({ prompt: textToUse, aspectRatio }),
       });
 
       if (res.ok) {
@@ -63,6 +67,13 @@ export const ImageGeneratorView: React.FC<ImageGeneratorViewProps> = ({ onBackTo
       setIsGenerating(false);
     }
   };
+
+  React.useEffect(() => {
+    if (initialPrompt && initialPrompt.trim()) {
+      setPrompt(initialPrompt.trim());
+      handleGenerate(initialPrompt.trim());
+    }
+  }, [initialPrompt]);
 
   const handleDownload = () => {
     if (!currentImage) return;
@@ -128,7 +139,7 @@ export const ImageGeneratorView: React.FC<ImageGeneratorViewProps> = ({ onBackTo
           </div>
 
           <button
-            onClick={handleGenerate}
+            onClick={() => handleGenerate()}
             disabled={isGenerating}
             className="w-full py-3.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-bold text-xs rounded-2xl shadow-xl shadow-purple-600/25 transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
           >

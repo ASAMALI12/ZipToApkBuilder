@@ -91,6 +91,66 @@ export const KernelTrainerView: React.FC<KernelTrainerViewProps> = ({
     await StorageEngine.saveLearnedKnowledge('');
   };
 
+  const [activeTab, setActiveTab] = useState<'knowledge' | 'libraries'>('knowledge');
+  const [attachedLibs, setAttachedLibs] = useState<Record<string, boolean>>(() => {
+    try {
+      const saved = localStorage.getItem('kernel_attached_libraries');
+      return saved ? JSON.parse(saved) : { threejs: true, arabLex: true };
+    } catch {
+      return { threejs: true, arabLex: true };
+    }
+  });
+
+  const availableLibraries = [
+    {
+      id: 'threejs',
+      name: 'Three.js 3D Engine',
+      category: 'رسوم ثلاثية الأبعاد',
+      desc: 'مكتبة بناء ونمذجة الأشكال والرسومات ثلاثية الأبعاد (3D WebGL).',
+      rule: 'تمتلك النواة مكتبة Three.js لدعم بناء ونمذجة المجسمات ثلاثية الأبعاد.',
+    },
+    {
+      id: 'vision',
+      name: 'Vision & Image Filters DSP',
+      category: 'معالجة الصور',
+      desc: 'مكتبة معالجة الفلاتر البصرية، التعرف على الأنماط، ومصفوفات البكسل.',
+      rule: 'تمتلك النواة مكتبة فلاتر الرؤية البصرية ومعالجة الصور المتقدمة.',
+    },
+    {
+      id: 'math',
+      name: 'Symbolic Math & Physics Kernel',
+      category: 'معادلات وفيزياء',
+      desc: 'مكتبة حل المعادلات التفاضلية والمحاكاة الفيزيائية الرمزية.',
+      rule: 'تمتلك النواة مكتبة المحاكاة والفيزياء الرمزية وحل المعادلات الرياضية.',
+    },
+    {
+      id: 'arabLex',
+      name: 'Arabic Dialect Neural Lexicon',
+      category: 'معالجة اللغة الطبيعية',
+      desc: 'المعجم العصبي الموسع للهجات العربية الفصحى والعامية.',
+      rule: 'النواة مجهزة بمعجم عصبي موسع لفهم كافة اللهجات العربية الفصحى والعامية بدقة متناهية.',
+    },
+  ];
+
+  const toggleLibrary = (libId: string, libRule: string) => {
+    const updated = { ...attachedLibs, [libId]: !attachedLibs[libId] };
+    setAttachedLibs(updated);
+    try {
+      localStorage.setItem('kernel_attached_libraries', JSON.stringify(updated));
+    } catch {}
+
+    // Automatically append or remove rule from knowledge
+    let newKnowledge = knowledgeText;
+    if (updated[libId]) {
+      if (!newKnowledge.includes(libRule)) {
+        newKnowledge = (newKnowledge ? newKnowledge + '\n' : '') + libRule;
+      }
+    } else {
+      newKnowledge = newKnowledge.replace(libRule, '').replace(/\n\s*\n/g, '\n').trim();
+    }
+    setKnowledgeText(newKnowledge);
+  };
+
   return (
     <div className="flex-1 flex flex-col p-4 md:p-6 pb-20 bg-slate-950 text-slate-100 min-h-[85vh] font-arabic max-w-3xl mx-auto w-full select-none">
       {/* Top Header */}
@@ -105,40 +165,121 @@ export const KernelTrainerView: React.FC<KernelTrainerViewProps> = ({
 
         <div className="flex items-center gap-2 text-xs font-mono text-cyan-300">
           <GraduationCap className="w-4 h-4 text-cyan-400" />
-          <span className="font-bold">تعليم وتدريب عقل النواة</span>
+          <span className="font-bold">تعليم وتدريب عقل النواة وإرفاق المكتبات</span>
         </div>
       </div>
 
-      {/* Main Training Card */}
-      <div className="flex-1 flex flex-col bg-slate-900/60 backdrop-blur-xl border border-slate-800/80 rounded-3xl p-6 shadow-2xl space-y-4">
-        <div className="flex items-center justify-between">
-          <label className="text-sm font-bold text-white flex items-center gap-2">
-            <Sparkles className="w-4 h-4 text-cyan-400" />
-            <span>مربع لصق التعليم والمعرفة للنواة:</span>
-          </label>
-          {knowledgeText && (
-            <button
-              onClick={handleClear}
-              className="text-xs text-rose-400 hover:text-rose-300 flex items-center gap-1 cursor-pointer transition-colors"
-              title="مسح النص"
-            >
-              <Trash2 className="w-3.5 h-3.5" />
-              <span>مسح</span>
-            </button>
-          )}
+      {/* Navigation Sub-Tabs */}
+      <div className="flex items-center gap-2 mb-4 bg-slate-900/80 p-1 rounded-2xl border border-slate-800 w-fit">
+        <button
+          onClick={() => setActiveTab('knowledge')}
+          className={`px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+            activeTab === 'knowledge' ? 'bg-cyan-500 text-slate-950 shadow-md' : 'text-slate-400 hover:text-white'
+          }`}
+        >
+          تعليم وقواعد النواة (Knowledge Rules)
+        </button>
+        <button
+          onClick={() => setActiveTab('libraries')}
+          className={`px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+            activeTab === 'libraries' ? 'bg-cyan-500 text-slate-950 shadow-md' : 'text-slate-400 hover:text-white'
+          }`}
+        >
+          <span>المكتبات الملحقة بالنواة (Attached Libraries)</span>
+          <span className="px-1.5 py-0.5 rounded-full text-[10px] bg-slate-950 text-cyan-300 font-mono">
+            {Object.values(attachedLibs).filter(Boolean).length}
+          </span>
+        </button>
+      </div>
+
+      {activeTab === 'libraries' ? (
+        /* Attached Libraries Tab */
+        <div className="flex-1 flex flex-col bg-slate-900/60 backdrop-blur-xl border border-slate-800/80 rounded-3xl p-6 shadow-2xl space-y-4">
+          <div>
+            <h3 className="text-sm font-bold text-white flex items-center gap-2 mb-1">
+              <BookOpen className="w-4 h-4 text-cyan-400" />
+              <span>إرفاق المكتبات والأدوات لعقل النواة</span>
+            </h3>
+            <p className="text-xs text-slate-400 leading-relaxed">
+              عندما تعجز النواة عن تنفيذ أمر بسبب نقص حزمة برمجية، يمكنك تفعيل وإرفاق المكتبة المناسبة هنا لتمكين النواة من دعمها فوراً.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-2">
+            {availableLibraries.map((lib) => {
+              const isAttached = Boolean(attachedLibs[lib.id]);
+              return (
+                <div
+                  key={lib.id}
+                  className={`p-4 rounded-2xl border transition-all ${
+                    isAttached
+                      ? 'bg-cyan-950/40 border-cyan-500/50 shadow-lg shadow-cyan-500/10'
+                      : 'bg-slate-950/70 border-slate-800/80 opacity-70'
+                  }`}
+                >
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-xs font-bold text-white font-mono">{lib.name}</span>
+                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-slate-800 text-cyan-300">
+                      {lib.category}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-400 leading-relaxed mb-3">
+                    {lib.desc}
+                  </p>
+                  <button
+                    onClick={() => toggleLibrary(lib.id, lib.rule)}
+                    className={`w-full py-2 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                      isAttached
+                        ? 'bg-cyan-500 hover:bg-cyan-400 text-slate-950'
+                        : 'bg-slate-800 hover:bg-slate-700 text-slate-300'
+                    }`}
+                  >
+                    {isAttached ? '✓ المكتبة مرفقة بالنواة' : '+ إرفاق المكتبة للنواة'}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+
+          <button
+            onClick={handleSaveKnowledge}
+            disabled={isSaving}
+            className="w-full py-3.5 bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 text-slate-950 font-bold text-xs rounded-2xl shadow-xl transition-all cursor-pointer mt-4"
+          >
+            تثبيت المكتبات المرفقة في عقل النواة
+          </button>
         </div>
+      ) : (
+        /* Main Training Knowledge Card */
+        <div className="flex-1 flex flex-col bg-slate-900/60 backdrop-blur-xl border border-slate-800/80 rounded-3xl p-6 shadow-2xl space-y-4">
+          <div className="flex items-center justify-between">
+            <label className="text-sm font-bold text-white flex items-center gap-2">
+              <Sparkles className="w-4 h-4 text-cyan-400" />
+              <span>مربع لصق التعليم والمعرفة للنواة:</span>
+            </label>
+            {knowledgeText && (
+              <button
+                onClick={handleClear}
+                className="text-xs text-rose-400 hover:text-rose-300 flex items-center gap-1 cursor-pointer transition-colors"
+                title="مسح النص"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>مسح</span>
+              </button>
+            )}
+          </div>
 
-        <p className="text-xs text-slate-400 leading-relaxed">
-          الصق هنا أي تعليمات أو معلومات أو قواعد تريد للنواة أن تفهمها وتحفظها. بعد الحفظ، ارجع للدردشة واسألها لتتأكد أنها تعلمت!
-        </p>
+          <p className="text-xs text-slate-400 leading-relaxed">
+            الصق هنا أي تعليمات أو معلومات أو قواعد تريد للنواة أن تفهمها وتحفظها. بعد الحفظ، ارجع للدردشة واسألها لتتأكد أنها تعلمت!
+          </p>
 
-        {/* Big Paste Area */}
-        <textarea
-          value={knowledgeText}
-          onChange={(e) => {
-            setKnowledgeText(e.target.value);
-            setSavedSuccess(false);
-          }}
+          {/* Big Paste Area */}
+          <textarea
+            value={knowledgeText}
+            onChange={(e) => {
+              setKnowledgeText(e.target.value);
+              setSavedSuccess(false);
+            }}
           rows={10}
           placeholder="الصق هنا التعليمات والمعلومات التي تريد للنواة أن تتعلمها...
 مثال:
@@ -180,6 +321,7 @@ export const KernelTrainerView: React.FC<KernelTrainerViewProps> = ({
           </div>
         )}
       </div>
+      )}
     </div>
   );
 };

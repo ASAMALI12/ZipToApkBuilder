@@ -1,4 +1,4 @@
-import { IntentResult, IntentEnum, UIAction } from '../types/kernel';
+import { IntentResult, IntentEnum, UIAction, KernelDiagnosticReport } from '../types/kernel';
 
 /**
  * High-Speed Arabic Text Normalizer:
@@ -26,9 +26,11 @@ export function normalizeArabic(text: string): string {
     .toLowerCase();
 }
 
-// Tier 1 Fast-Path Regex patterns operating on normalized text
-const CLOSE_MIC_REGEX = /(?:اغلاق (?:ال)?مايك|اغلاق (?:ال)?ميكروفون|اسكت|اصمت|انكتم|اخرس|كافي|بس|توقف|وقف|اوقف|اوقف التحدث|توقف عن التحدث|توقف عن الاستماع|توقف عن الكلام|stop|quiet|hush|shut up|close mic|mute mic)/i;
-const BUILD_APP_REGEX = /(?:افتح (?:صفحه|قسم)? (?:بناء )?(?:ال)?تطبيق(?:ات)?|بناء (?:ال)?تطبيق(?:ات)?|ابني (?:لي )?تطبيق|طور تطبيق|برمج تطبيق|اريد بناء تطبيق|build app|create app)/i;
+// Tier 1 Fast-Path Regex patterns operating on normalized text with strict boundaries
+const CLOSE_MIC_REGEX = /^(?:اغلاق (?:ال)?مايك(?:روفون)?|اطف[يئ] (?:ال)?مايك(?:روفون)?|انهاء (?:ال)?مكالم[هة]|اقفل (?:ال)?مايك(?:روفون)?|اغلق (?:ال)?مايك|close mic|mute mic|stop mic)$/i;
+const INTERRUPT_SPEECH_REGEX = /^(?:اسكت|اصمت|انكتم|اخرس|توقف عن الكلام|توقف عن التحدث|صمت|silent|shut up|hush)$/i;
+const EXECUTE_COMMAND_REGEX = /^(?:نفذ (?:لي )?(?:هذا )?(?:ال)?امر|تنفيذ (?:ال)?امر|قم بتنفيذ|طبق (?:ال)?امر|ابدأ (?:ال)?تنفيذ|باشر (?:ال)?تنفيذ|نفذ|execute|run command)$/i;
+const BUILD_APP_REGEX = /(?:وورك\s*(?:فلو|قلو|كلو|فلوه)|workflow|سير\s*(?:ال)?عمل|افتح (?:صفحه|قسم)? (?:بناء )?(?:ال)?تطبيق(?:ات)?|بناء (?:ال)?تطبيق(?:ات)?|ابني (?:لي )?تطبيق|لنبني (?:لي )?تطبيق|لنقوم ببناء|طور تطبيق|برمج تطبيق|اريد بناء تطبيق|اضف (?:لي )?ملف|build app|create app)/i;
 const GEN_IMAGE_REGEX = /(?:افتح (?:صفحه|استوديو|قسم) (?:ال)?صور|انشئ (?:لي )?صور(?:[هة])?|صمم (?:لي )?صور(?:[هة])?|توليد (?:ال)?صور(?:[هة])?|ارسم (?:لي )?صور(?:[هة])?|generate image|create image)/i;
 const CREATE_GAME_REGEX = /(?:افتح (?:صفحه|استوديو) (?:ال)?(?:العاب|لعب[هة])|اصنع لعب[هة]|انشاء لعب[هة]|برمج لعب[هة]|create game)/i;
 const CREATE_MEDIA_REGEX = /(?:افتح (?:صفحه|استوديو) (?:ال)?(?:فيديو|فديو|وسائط)|انشاء (?:فيديو|فديو)|استوديو (?:فيديو|فديو)|video studio)/i;
@@ -36,7 +38,7 @@ const CONNECT_GITHUB_REGEX = /(?:افتح (?:صفحه )?(?:جيت|كيت)\s*هب
 const CONNECT_SUPABASE_REGEX = /(?:افتح (?:صفحه )?سوبابيس|ربط سوبابيس|اربط سوبابيس|supabase)/i;
 const LINK_KERNEL_REGEX = /(?:اربط (?:ال)?نوا[هة]|حمل (?:ال)?نوا[هة]|تحميل (?:ال)?نوا[هة]|ربط (?:ال)?نوا[هة]|نربط (?:ال)?نوا[هة]|اختر (?:ملف )?(?:ال)?نوا[هة]|ملف (?:ال)?نوا[هة]|link kernel)/i;
 const TEACH_KERNEL_REGEX = /(?:افتح (?:محادث[هة] )?(?:ال)?برمج[هة]|محادث[هة] (?:ال)?برمج[هة]|لنعلم (?:ال)?نوا[هة]|تعليم (?:ال)?نوا[هة]|تدريب (?:ال)?نوا[هة]|علم (?:ال)?نوا[هة]|ندرب (?:ال)?نوا[هة]|صفح[هة] تعليم|افتح تعليم|teach kernel)/i;
-const NAVIGATE_BACK_REGEX = /(?:ارجع (?:الى )?(?:الصفح[هة] )?(?:السابق[هة])?|العود[هة]|رجوع|ارجع|الصفح[هة] الرئيس(?:ي|ي[هة])|الرئيسي[هة]|go back|back)/i;
+const NAVIGATE_BACK_REGEX = /^(?:ارجع (?:الى )?(?:الصفح[هة] )?(?:السابق[هة])?|العود[هة]|رجوع|الصفح[هة] الرئيس(?:ي|ي[هة])|الرئيسي[هة]|go back|back)$/i;
 
 // In-memory cache for ultra-fast recurring queries
 const intentCache = new Map<string, IntentResult>();
@@ -55,8 +57,30 @@ export function checkQuickIntent(utterance: string): IntentResult | null {
       confidence: 1.0,
       parameters: { raw_utterance: utterance },
       ui_action: 'EXECUTE_SYSTEM_ACTION',
-      assistant_response: 'تم إيقاف التحدث فوراً.',
-      voice_spoken_text: '', // Silent stop: never talk back when user commands silence
+      assistant_response: 'تم إيقاف الميكروفون.',
+      voice_spoken_text: '',
+    };
+  }
+
+  if (INTERRUPT_SPEECH_REGEX.test(norm)) {
+    return {
+      intent: 'INTENT_INTERRUPT_SPEECH',
+      confidence: 1.0,
+      parameters: { raw_utterance: utterance },
+      ui_action: 'EXECUTE_SYSTEM_ACTION',
+      assistant_response: 'صامت ومستمع لأوامرك.',
+      voice_spoken_text: '',
+    };
+  }
+
+  if (EXECUTE_COMMAND_REGEX.test(norm)) {
+    return {
+      intent: 'INTENT_EXECUTE_COMMAND',
+      confidence: 1.0,
+      parameters: { raw_utterance: utterance },
+      ui_action: 'EXECUTE_SYSTEM_ACTION',
+      assistant_response: 'أمرك قيد التنفيذ، النواة تباشر العمل وتستمر بالاستماع إليك.',
+      voice_spoken_text: 'أمرك قيد التنفيذ، النواة تباشر العمل.',
     };
   }
 
@@ -94,13 +118,22 @@ export function checkQuickIntent(utterance: string): IntentResult | null {
   }
 
   if (BUILD_APP_REGEX.test(norm)) {
+    const isWorkflow = /(?:وورك|قلو|فلو|سير\s*(?:ال)?عمل|workflow)/i.test(norm);
     return {
       intent: 'INTENT_BUILD_APP',
       confidence: 0.99,
-      parameters: { target: 'app_builder', raw_utterance: utterance },
+      parameters: {
+        target: 'app_builder',
+        raw_utterance: utterance,
+        appType: isWorkflow ? 'workflow' : 'تطبيق النواة'
+      },
       ui_action: 'ROUTE_PREDEFINED',
-      assistant_response: 'فتحت لك صفحة بناء وتطوير تطبيقات أندرويد وآيفون.',
-      voice_spoken_text: 'تم فتح صفحة بناء التطبيقات.',
+      assistant_response: isWorkflow
+        ? 'تمت إضافة وتجهيز ملف Workflow الكامل (.github/workflows/workflow.yml) لبناء وتصدير التطبيق تلقائياً، وفُتحت لك صفحة سير العمل.'
+        : 'فتحت لك صفحة بناء وتطوير تطبيقات أندرويد وآيفون.',
+      voice_spoken_text: isWorkflow
+        ? 'تمت إضافة وتجهيز ملف الوورك فلو لبناء التطبيق.'
+        : 'تم فتح صفحة بناء التطبيقات.',
     };
   }
 
@@ -159,7 +192,86 @@ export function checkQuickIntent(utterance: string): IntentResult | null {
     };
   }
 
+  // Fast extraction for Image Generation with Prompt: "انشئ صورة مزرعة" / "كلب" / "ارسم مزرعة"
+  const imageMatch = utterance.match(/(?:انشئ|صمم|توليد|ارسم|صور(?:ة|ه)?)\s+(?:لي\s+)?(?:صور(?:ة|ه)?\s+)?(?:عن\s+|لـ\s+)?(.+)/i);
+  if (imageMatch && imageMatch[1] && /(?:مزرع[هة]|كلب|قط[هة]|سيار[هة]|فضاء|روبوت|منزل|شجر[هة]|بحر|طبيع[هة]|لوح[هة]|تصميم|خلفي[هة]|لوجو)/i.test(imageMatch[1])) {
+    const promptClean = imageMatch[1].trim();
+    return {
+      intent: 'INTENT_GENERATE_IMAGE',
+      confidence: 0.98,
+      parameters: { target: 'image_generator', prompt: promptClean, raw_utterance: utterance },
+      ui_action: 'ROUTE_PREDEFINED',
+      assistant_response: `تم فتح استوديو الصور وجاري توليد صورة "${promptClean}" مباشرة عبر النواة.`,
+      voice_spoken_text: `جاري توليد صورة ${promptClean} عبر النواة.`,
+    };
+  }
+
+  // Fast extraction for App Building: "لنبني تطبيق..." / "ابني تطبيق..."
+  const appMatch = utterance.match(/(?:بناء|ابني|طور|برمج|لنبني|اريد بناء)\s+(?:لي\s+)?(?:تطبيق|برنامج)?\s*(.*)/i);
+  if (appMatch && appMatch[1] && appMatch[1].trim()) {
+    const appTypeClean = appMatch[1].trim() || 'تطبيق جديد';
+    return {
+      intent: 'INTENT_BUILD_APP',
+      confidence: 0.98,
+      parameters: { target: 'app_builder', appType: appTypeClean, raw_utterance: utterance },
+      ui_action: 'ROUTE_PREDEFINED',
+      assistant_response: `تم فتح صفحة بناء التطبيقات لتطوير "${appTypeClean}" لأجهزة أندرويد وآيفون.`,
+      voice_spoken_text: `تم فتح صفحة بناء تطبيق ${appTypeClean}.`,
+    };
+  }
+
   return null;
+}
+
+/**
+ * Intelligent Diagnostic Engine:
+ * Analyzes inexecutable or failed commands and determines:
+ * 1. Is the defect in the KERNEL? (Lacks knowledge, needs teaching, or needs attached library)
+ * 2. Or is the defect in the ENGINE? (Unsupported engine capability, physical execution, quota)
+ */
+export function diagnoseCommandDefect(utterance: string, boundKernel?: any): KernelDiagnosticReport {
+  const norm = normalizeArabic(utterance);
+
+  // 1. Physical world actions / Hardware control / Browser sandbox restrictions -> Engine Limitation
+  if (/(?:حجز|طيران|فندق|سفر|مكيف|سيار[هة] حقيقي[هة]|اطبخ|اكل|شراء حقيقي|تحكم بالبيت|غسيل|كهرباء|شاحن)/i.test(norm)) {
+    return {
+      hasDefect: true,
+      origin: 'ENGINE',
+      defectType: 'ENGINE_UNSUPPORTED',
+      title: 'المشكلة في المحرك (Engine Limitation)',
+      cause: 'محرك التشغيل البرمجي لا يدعم التحكم في الأجهزة الفيزيائية أو حجز الخدمات الخارجية مباشرة خارج نطاق واجهات التطبيق.',
+      suggestedAction: 'المحرك الحالي محصور في تطوير البرمجيات وتوليد الوسائط وإدارة الأكواد. لا يمكن تدريب النواة على أفعال فيزيائية.',
+      technicalDetails: 'Sandbox & Web Platform Execution Boundary',
+      commandRequested: utterance,
+    };
+  }
+
+  // 2. High-performance computation requiring external missing libraries -> Kernel Library Missing
+  if (/(?:معادلات تفاضلي[هة]|فيزياء ثلاثي[هة] الابعاد|ذكاء بصري محلي|opencv|cad|dwg|بلوتوث|nfc|تعدين|شيدر معقد)/i.test(norm)) {
+    return {
+      hasDefect: true,
+      origin: 'KERNEL',
+      defectType: 'KERNEL_LIBRARY_REQUIRED',
+      title: 'المشكلة في النواة: تفتقر لمكتبة ملحقة (Library Required)',
+      cause: 'النواة قادرة مبدئياً على فهم هذا الأمر، لكنها تفتقر إلى حزمة أو مكتبة برمجية ملحقة (Attached Library/Module) لتنفيذه.',
+      suggestedAction: 'يجب إرفاق مكتبة برمجية متخصصة للنواة من صفحة "تعليم وتدريب النواة" وتفعيل خيار الحزم الملحقة.',
+      recommendedRoute: 'kernel_trainer',
+      missingLibraryName: 'مكتبة معالجة تخصصية (Specialized Subsystem Library)',
+      commandRequested: utterance,
+    };
+  }
+
+  // 3. Custom domain rules, specialized business logic, or untaught tasks -> Kernel Knowledge Missing
+  return {
+    hasDefect: true,
+    origin: 'KERNEL',
+    defectType: 'KERNEL_KNOWLEDGE_MISSING',
+    title: 'المشكلة في النواة: ليس لها معرفة بهذا الأمر (Needs Teaching)',
+    cause: 'النواة لا تملك حالياً قاعدة معرفية أو قواعد تشغيل مسجلة لتنفيذ هذا الأمر المحدد.',
+    suggestedAction: 'يجب تعليم النواة وإضافة قواعد وسياق جديد لها عبر الانتقال إلى صفحة "تعليم وتدريب النواة".',
+    recommendedRoute: 'kernel_trainer',
+    commandRequested: utterance,
+  };
 }
 
 /**

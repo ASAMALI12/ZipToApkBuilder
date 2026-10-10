@@ -223,12 +223,40 @@ export class StorageEngine {
     } catch {}
   }
 
-  public static loadBoundKernel(): BoundKernel | null {
+  public static getDefaultKernel(): BoundKernel {
+    return {
+      fileName: 'autonomous_core_kernel.json',
+      fileSize: 4096,
+      bindTimestamp: new Date().toISOString(),
+      name: 'نواة الذكاء الذاتية',
+      version: '4.2.0-core',
+      rules: [
+        'تنفيذ كافة الأوامر البرمجية والتشغيلية فوراً وبدون انقطاع أو خروج من التطبيق',
+        'الاستماع المستمر للمستخدم والتفاعل الصوتي الذكي الحصري من خلال النواة',
+        'بناء التطبيقات وتصميم الصور والألعاب وإدارة المشاريع بدقة متناهية',
+        'عدم إغلاق الميكروفون إلا بطلب صريح ومؤكد من المستخدم',
+      ],
+      instructions: [
+        'أنت النواة الذكية المستقلة التي تدير التطبيق بالكامل.',
+        'استجب لجميع الأوامر ونفذها فوراً عبر واجهات التطبيق المخصصة دون انقطاع.',
+        'تحدث دائماً بصفة النواة الذكية بأسلوب مقتضب وواضح.',
+      ],
+      rawContent: 'نواة الذكاء الذاتية - محرك النظام الشامل المستقل',
+      isActive: true,
+    };
+  }
+
+  public static loadBoundKernel(): BoundKernel {
     try {
       const data = localStorage.getItem(STORAGE_KEYS.BOUND_KERNEL);
-      if (data) return JSON.parse(data);
+      if (data) {
+        const parsed = JSON.parse(data);
+        if (parsed && parsed.name) return parsed;
+      }
     } catch {}
-    return null;
+    const defaultKernel = StorageEngine.getDefaultKernel();
+    StorageEngine.saveBoundKernel(defaultKernel);
+    return defaultKernel;
   }
 
   public static saveBoundKernel(kernel: BoundKernel | null): void {

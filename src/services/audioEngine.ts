@@ -190,18 +190,20 @@ class AudioEngine {
     return matchCount / transWords.length >= 0.75;
   }
 
+  private interimCommitTimer: any = null;
+
   private constructor() {
     this.vad = new SileroStyleVAD({
       sampleRate: 16000,
       frameSize: 512, // 32ms at 16kHz
       speechThresholdMultiplier: 1.15,
-      speechThreshold: 0.0016, // Sensitive capture on first attempt even with quiet voice/mic
-      positiveSpeechThreshold: 0.14, // Highly responsive speech confidence
-      silenceDurationMs: 350, // Snappy Endpoint Detection without premature cutoff
-      hangoverFrames: 9, // ~288ms
-      minSpeechFrames: 1, // Catches the very first syllable on the first attempt
-      preRollFrames: 10, // 300ms pre-roll buffer to preserve first letter/syllable
-      postRollFrames: 8, // ~256ms post-roll buffer
+      speechThreshold: 0.0012, // Sensitive capture for soft voices
+      positiveSpeechThreshold: 0.12, // Smooth speech confidence
+      silenceDurationMs: 950, // Anti-Cutoff: 950ms allows natural hesitation & breathing without cutting off
+      hangoverFrames: 30, // ~960ms trailing speech buffer
+      minSpeechFrames: 2, // 2 frames (~64ms) prevents accidental mouth clicks
+      preRollFrames: 14, // ~448ms pre-roll buffer to preserve first syllables
+      postRollFrames: 14, // ~448ms post-roll buffer to preserve trailing syllables
     });
 
     this.player = new StreamingAudioPlayer();
@@ -430,10 +432,21 @@ class AudioEngine {
     return this.callMode;
   }
 
-  public setSensitivity(level: 'HIGH' | 'NORMAL' | 'NOISE_ISOLATION') {
+  public setSensitivity(level: 'HIGH' | 'NORMAL' | 'NOISE_ISOLATION', customSilenceMs?: number) {
     this.sensitivityLevel = level;
+    if (level === 'HIGH') {
+      // Anti-Cutoff high sensitivity: 1100ms tolerance
+      this.vad.updateSensitivityPreset('ANTI_CUTOFF', customSilenceMs ?? 1100);
+    } else if (level === 'NORMAL') {
+      // Balanced: 850ms tolerance
+      this.vad.updateSensitivityPreset('BALANCED', customSilenceMs ?? 850);
+    } else {
+      // Fast: 600ms tolerance
+      this.vad.updateSensitivityPreset('FAST', customSilenceMs ?? 600);
+    }
+
     if (this.micGainNode && this.audioCtx) {
-      const gainVal = level === 'HIGH' ? 2.8 : level === 'NORMAL' ? 2.0 : 1.2;
+      const gainVal = level === 'HIGH' ? 3.6 : level === 'NORMAL' ? 2.6 : 1.4;
       this.micGainNode.gain.setValueAtTime(gainVal, this.audioCtx.currentTime);
     }
   }
@@ -590,24 +603,14 @@ class AudioEngine {
           // Voice Barge-In: user is speaking while assistant is speaking!
           if (this.callStatus === 'SPEAKING') {
             this.interruptSpeech();
-            const quickMatch = checkQuickIntent(displayText);
-            if (quickMatch && quickMatch.intent === 'INTENT_CLOSE_MIC') {
-              this.currentLiveTranscript = '';
-              this.notifyTranscript(displayText, true);
-              this.notifyResult(quickMatch);
-              return;
-            }
           }
 
           this.currentLiveTranscript = displayText;
           this.notifyTranscript(displayText, Boolean(finalUtterance.trim()));
 
-          // Only trigger immediate mute/close mic during interim speech (e.g. user shouts 'اسكت')
-          const quickMatch = checkQuickIntent(displayText);
-          if (quickMatch && quickMatch.intent === 'INTENT_CLOSE_MIC') {
-            this.currentLiveTranscript = '';
-            this.handleDirectTextUtterance(displayText);
-            return;
+          if (this.interimCommitTimer) {
+            clearTimeout(this.interimCommitTimer);
+            this.interimCommitTimer = null;
           }
 
           if (finalUtterance.trim()) {
@@ -616,7 +619,22 @@ class AudioEngine {
             this.currentLiveTranscript = '';
             this.speechHandledForCurrentTurn = true;
             this.recorded16kChunks = [];
+            this.vad.reset();
             this.executeUtterance(finalClean, 'speech');
+          } else if (interim.trim().length > 2) {
+            // High-Speed Interim Debounce: Commit speech after 850ms silence even if browser delays isFinal
+            this.interimCommitTimer = setTimeout(() => {
+              if (this.currentLiveTranscript && this.callStatus === 'LISTENING' && !this.isProcessingAudio) {
+                const text = this.currentLiveTranscript.trim();
+                if (text.length > 2 && !this.isAssistantEcho(text)) {
+                  this.currentLiveTranscript = '';
+                  this.speechHandledForCurrentTurn = true;
+                  this.recorded16kChunks = [];
+                  this.vad.reset();
+                  this.executeUtterance(text, 'speech');
+                }
+              }
+            }, 850);
           }
         };
 
@@ -625,7 +643,7 @@ class AudioEngine {
         };
 
         this.speechRecognizer.onend = () => {
-          if (this.callStatus === 'LISTENING') {
+          if (this.callStatus !== 'IDLE' && this.callStatus !== 'STOPPING') {
             try { this.speechRecognizer?.start(); } catch {}
           }
         };
@@ -886,6 +904,14 @@ class AudioEngine {
       const localLatencyMs = Math.round(performance.now() - startTime);
       console.log(`[Kernel Voice Latency] Local command "${cleanText}" executed in ${localLatencyMs}ms`);
 
+      if (quickMatch.intent === 'INTENT_INTERRUPT_SPEECH') {
+        this.interruptSpeech();
+        this.notifyTranscript(cleanText, true);
+        this.notifyResult(quickMatch);
+        this.resetToListening();
+        return;
+      }
+
       this.notifyTranscript(cleanText, true);
       this.notifyResult({
         ...quickMatch,
@@ -894,6 +920,8 @@ class AudioEngine {
 
       if (quickMatch.voice_spoken_text) {
         await this.speak(quickMatch.voice_spoken_text);
+      } else {
+        this.resetToListening();
       }
       return;
     }
@@ -1108,6 +1136,12 @@ class AudioEngine {
 
     if (this.audioCtx && this.audioCtx.state === 'suspended') {
       this.audioCtx.resume().catch(() => {});
+    }
+
+    if (this.speechRecognizer) {
+      try {
+        this.speechRecognizer.start();
+      } catch {}
     }
 
     this.setStatus('LISTENING');

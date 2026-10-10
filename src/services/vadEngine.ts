@@ -52,29 +52,58 @@ export class SileroStyleVAD {
     const sampleRate = customConfig?.sampleRate ?? 16000;
     const msPerFrame = (frameSize / sampleRate) * 1000; // 32ms
 
-    // 300ms buffer calculation: 300ms / 32ms ≈ 9.4 -> 10 frames = 320ms
-    const framesFor300ms = Math.max(9, Math.ceil(300 / msPerFrame));
+    // Generous Pre/Post roll buffer to preserve initial and trailing syllables: ~450ms
+    const framesFor450ms = Math.max(12, Math.ceil(450 / msPerFrame)); // ~14 frames = 448ms
 
-    // Instant Endpoint Detection: 350ms silence duration for snappy sentence completion
-    const silenceDurationMs = customConfig?.silenceDurationMs ?? 350;
-    const calculatedHangover = Math.max(9, Math.min(12, Math.round(silenceDurationMs / msPerFrame)));
+    // Generous Anti-Cutoff Silence Duration: 950ms prevents premature sentence cuts while breathing/hesitating
+    const silenceDurationMs = customConfig?.silenceDurationMs ?? 950;
+    const calculatedHangover = Math.max(22, Math.round(silenceDurationMs / msPerFrame)); // ~30 frames = 960ms
 
     this.config = {
       sampleRate,
       frameSize,
       speechThresholdMultiplier: 1.15,
-      speechThreshold: 0.0016, // Ultra-sensitive threshold captures quiet mics and soft voices on the very first try
-      positiveSpeechThreshold: 0.14, // Highly responsive speech confidence
+      speechThreshold: 0.0012, // Ultra-sensitive threshold captures quiet mics and soft voices
+      positiveSpeechThreshold: 0.12, // Highly responsive speech confidence
       silenceDurationMs,
       hangoverFrames: customConfig?.hangoverFrames ?? calculatedHangover,
-      minSpeechFrames: customConfig?.minSpeechFrames ?? 1, // 1 frame (~32ms) captures the very first syllable instantly
-      preRollFrames: customConfig?.preRollFrames ?? framesFor300ms, // 300ms buffer before speech
-      postRollFrames: customConfig?.postRollFrames ?? framesFor300ms, // 300ms buffer after speech
+      minSpeechFrames: customConfig?.minSpeechFrames ?? 2, // 2 frames (~64ms) prevents accidental mouth clicks
+      preRollFrames: customConfig?.preRollFrames ?? framesFor450ms,
+      postRollFrames: customConfig?.postRollFrames ?? framesFor450ms,
       ...customConfig,
     };
 
     this.maxPreRoll = this.config.preRollFrames;
     this.maxPostRoll = this.config.postRollFrames;
+  }
+
+  /**
+   * Dynamically adjust sensitivity and anti-cutoff thresholds
+   */
+  public updateSensitivityPreset(preset: 'ANTI_CUTOFF' | 'BALANCED' | 'FAST', customSilenceMs?: number) {
+    const msPerFrame = (this.config.frameSize / this.config.sampleRate) * 1000;
+    if (preset === 'ANTI_CUTOFF') {
+      // 1100ms silence tolerance: for users who pause or speak slowly without any cutoff
+      const ms = customSilenceMs ?? 1100;
+      this.config.silenceDurationMs = ms;
+      this.config.hangoverFrames = Math.max(28, Math.round(ms / msPerFrame));
+      this.config.speechThreshold = 0.0010;
+      this.config.positiveSpeechThreshold = 0.10;
+    } else if (preset === 'BALANCED') {
+      // 850ms silence tolerance: natural conversational rhythm
+      const ms = customSilenceMs ?? 850;
+      this.config.silenceDurationMs = ms;
+      this.config.hangoverFrames = Math.max(22, Math.round(ms / msPerFrame));
+      this.config.speechThreshold = 0.0014;
+      this.config.positiveSpeechThreshold = 0.13;
+    } else {
+      // 550ms: snappy quick command execution
+      const ms = customSilenceMs ?? 550;
+      this.config.silenceDurationMs = ms;
+      this.config.hangoverFrames = Math.max(16, Math.round(ms / msPerFrame));
+      this.config.speechThreshold = 0.0016;
+      this.config.positiveSpeechThreshold = 0.15;
+    }
   }
 
   /**

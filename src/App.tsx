@@ -3,9 +3,10 @@ import {
   WorkspaceType,
   BoundKernel,
   CallStatus,
+  KernelDiagnosticReport,
 } from './types/kernel';
 import { audioEngine } from './services/audioEngine';
-import { parseUtterance, requestTTSAudio } from './services/intentParser';
+import { parseUtterance, requestTTSAudio, diagnoseCommandDefect } from './services/intentParser';
 import { StorageEngine } from './services/storageEngine';
 
 import { CentralCallOrb } from './components/voice/CentralCallOrb';
@@ -19,6 +20,7 @@ import { GitHubBridgeView } from './components/views/GitHubBridgeView';
 import { SupabaseBridgeView } from './components/views/SupabaseBridgeView';
 import { KernelLinkerView } from './components/views/KernelLinkerView';
 import { KernelTrainerView } from './components/views/KernelTrainerView';
+import { ErrorBoundary } from './components/common/ErrorBoundary';
 
 export default function App() {
   const [activeWorkspace, setActiveWorkspace] = useState<WorkspaceType>('home');
@@ -30,15 +32,52 @@ export default function App() {
   const [lastAssistantResponse, setLastAssistantResponse] = useState<string>('');
   const [activeActionNotice, setActiveActionNotice] = useState<{ name: string; workspace: string } | null>(null);
 
+  // Dynamic Parameters & Diagnostics
+  const [imagePrompt, setImagePrompt] = useState<string>('');
+  const [appType, setAppType] = useState<string>('');
+  const [activeDiagnostic, setActiveDiagnostic] = useState<KernelDiagnosticReport | null>(null);
+
   // Bound Kernel State
   const [boundKernel, setBoundKernel] = useState<BoundKernel | null>(() =>
     StorageEngine.loadBoundKernel()
   );
 
   // Apply Intent to Router
-  const applyIntentRouting = useCallback((intent: string, responseText?: string, spokenText?: string, rawUtterance?: string) => {
+  const applyIntentRouting = useCallback((
+    intent: string,
+    responseText?: string,
+    spokenText?: string,
+    rawUtterance?: string,
+    parameters?: any,
+    diagnostic?: KernelDiagnosticReport
+  ) => {
     if (responseText || spokenText) {
       setLastAssistantResponse(responseText || spokenText || '');
+    }
+
+    if (diagnostic) {
+      setActiveDiagnostic(diagnostic);
+    } else if (rawUtterance && intent === 'INTENT_GENERAL_QUERY' && /(?:انشئ|ابني|صمم|احجز|شغل|اطبخ|معادلات|تحكم)/i.test(rawUtterance)) {
+      const assessed = diagnoseCommandDefect(rawUtterance, boundKernel);
+      setActiveDiagnostic(assessed);
+    }
+
+    if (parameters?.prompt) {
+      setImagePrompt(parameters.prompt);
+    }
+    if (parameters?.appType) {
+      setAppType(parameters.appType);
+    }
+
+    if (intent === 'INTENT_INTERRUPT_SPEECH') {
+      audioEngine.interruptSpeech();
+      setLastAssistantResponse('أنا صامت ومستمع لأوامرك.');
+      return;
+    }
+
+    if (intent === 'INTENT_EXECUTE_COMMAND') {
+      setLastAssistantResponse('أمرك قيد التنفيذ فوراً، النواة تباشر العمل وتستمر بالاستماع إليك.');
+      return;
     }
 
     if (intent === 'INTENT_CLOSE_MIC') {
@@ -48,10 +87,7 @@ export default function App() {
       return;
     }
 
-    if (
-      intent === 'INTENT_NAVIGATE_BACK' ||
-      (rawUtterance && /(?:ارجع|العود[ةه]|رجوع|الصفح[ةه]\s+السابق[ةه]|الرئيسي[ةه]|go\s+back|back)/i.test(rawUtterance))
-    ) {
+    if (intent === 'INTENT_NAVIGATE_BACK') {
       setActiveWorkspace('home');
       setActiveActionNotice(null);
       return;
@@ -85,7 +121,7 @@ export default function App() {
       // General Query / Knowledge test / Chat: stay on current screen and converse!
       setActiveActionNotice(null);
     }
-  }, []);
+  }, [boundKernel]);
 
   // Autonomous Intent Processing via Voice or Text Chat Box (Unified Single Path)
   const processIntentExecution = useCallback(
@@ -117,7 +153,9 @@ export default function App() {
           res.intent,
           res.assistant_response,
           res.voice_spoken_text,
-          res.transcript || res.parameters?.raw_utterance
+          res.transcript || res.parameters?.raw_utterance,
+          res.parameters,
+          res.diagnostic || res.parameters?.diagnostic
         );
       }
     };
@@ -166,67 +204,85 @@ export default function App() {
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-arabic select-none selection:bg-cyan-500/30 selection:text-cyan-200">
       {/* Main Viewport */}
       <main className="flex-1 flex flex-col">
-        {/* Pure Clean Minimalist Voice & Chat Launcher */}
-        {activeWorkspace === 'home' && (
-          <CentralCallOrb
-            onQuickIntent={processIntentExecution}
-            currentTranscript={currentTranscript}
-            isInterimTranscript={isInterim}
-            boundKernel={boundKernel}
-            lastAssistantResponse={lastAssistantResponse}
-            activeActionNotice={activeActionNotice}
-            onOpenWorkspace={(ws) => setActiveWorkspace(ws as WorkspaceType)}
-          />
-        )}
+        <ErrorBoundary onReset={() => setActiveWorkspace('home')}>
+          {/* Pure Clean Minimalist Voice & Chat Launcher */}
+          {activeWorkspace === 'home' && (
+            <CentralCallOrb
+              onQuickIntent={processIntentExecution}
+              currentTranscript={currentTranscript}
+              isInterimTranscript={isInterim}
+              boundKernel={boundKernel}
+              lastAssistantResponse={lastAssistantResponse}
+              activeActionNotice={activeActionNotice}
+              activeDiagnostic={activeDiagnostic}
+              onClearDiagnostic={() => setActiveDiagnostic(null)}
+              onOpenWorkspace={(ws) => setActiveWorkspace(ws as WorkspaceType)}
+            />
+          )}
 
-        {/* 1. Kernel Trainer (تعليم النواة) */}
-        {activeWorkspace === 'kernel_trainer' && (
-          <KernelTrainerView
-            boundKernel={boundKernel}
-            onUpdateBoundKernel={handleBindKernel}
-            onBackToHome={() => setActiveWorkspace('home')}
-          />
-        )}
+          {/* 1. Kernel Trainer (تعليم النواة) */}
+          {activeWorkspace === 'kernel_trainer' && (
+            <KernelTrainerView
+              boundKernel={boundKernel}
+              onUpdateBoundKernel={handleBindKernel}
+              onBackToHome={() => setActiveWorkspace('home')}
+            />
+          )}
 
-        {/* 2. App Builder for Android & iPhone */}
-        {activeWorkspace === 'app_builder' && (
-          <AppBuilderView onBackToHome={() => setActiveWorkspace('home')} />
-        )}
+          {/* 2. App Builder for Android & iPhone */}
+          {activeWorkspace === 'app_builder' && (
+            <AppBuilderView
+              onBackToHome={() => setActiveWorkspace('home')}
+              initialAppType={appType}
+            />
+          )}
 
-        {/* 3. Image Generator Studio */}
-        {activeWorkspace === 'image_generator' && (
-          <ImageGeneratorView onBackToHome={() => setActiveWorkspace('home')} />
-        )}
+          {/* 3. Image Generator Studio */}
+          {activeWorkspace === 'image_generator' && (
+            <ImageGeneratorView
+              onBackToHome={() => setActiveWorkspace('home')}
+              initialPrompt={imagePrompt}
+            />
+          )}
 
-        {/* 4. Game Builder & Playable Canvas Game */}
-        {activeWorkspace === 'game_builder' && (
-          <GameBuilderView onBackToHome={() => setActiveWorkspace('home')} />
-        )}
+          {/* 4. Game Builder & Playable Canvas Game */}
+          {activeWorkspace === 'game_builder' && (
+            <GameBuilderView onBackToHome={() => setActiveWorkspace('home')} />
+          )}
 
-        {/* 5. Video & Audio Studio */}
-        {activeWorkspace === 'media_studio' && (
-          <MediaStudioView onBackToHome={() => setActiveWorkspace('home')} />
-        )}
+          {/* 5. Video & Audio Studio */}
+          {activeWorkspace === 'media_studio' && (
+            <MediaStudioView onBackToHome={() => setActiveWorkspace('home')} />
+          )}
 
-        {/* 6. GitHub Bridge */}
-        {activeWorkspace === 'github_bridge' && (
-          <GitHubBridgeView onBackToHome={() => setActiveWorkspace('home')} />
-        )}
+          {/* 6. GitHub Bridge */}
+          {activeWorkspace === 'github_bridge' && (
+            <GitHubBridgeView onBackToHome={() => setActiveWorkspace('home')} />
+          )}
 
-        {/* 7. Supabase Bridge */}
-        {activeWorkspace === 'supabase_bridge' && (
-          <SupabaseBridgeView onBackToHome={() => setActiveWorkspace('home')} />
-        )}
+          {/* 7. Supabase Bridge */}
+          {activeWorkspace === 'supabase_bridge' && (
+            <SupabaseBridgeView onBackToHome={() => setActiveWorkspace('home')} />
+          )}
 
-        {/* 8. Kernel File Linker (opens phone/PC file picker) */}
-        {activeWorkspace === 'kernel_linker' && (
-          <KernelLinkerView
-            boundKernel={boundKernel}
-            onBindKernel={handleBindKernel}
-            onBackToHome={() => setActiveWorkspace('home')}
-            autoOpenFilePicker={true}
-          />
-        )}
+          {/* 8. Kernel File Linker (opens phone/PC file picker) */}
+          {activeWorkspace === 'kernel_linker' && (
+            <KernelLinkerView
+              boundKernel={boundKernel}
+              onBindKernel={handleBindKernel}
+              onBackToHome={() => setActiveWorkspace('home')}
+              autoOpenFilePicker={false}
+            />
+          )}
+
+          {/* Floating Voice Control when inside active workspace */}
+          {activeWorkspace !== 'home' && (
+            <FloatingVoiceOrb
+              activeWorkspaceName={activeWorkspace}
+              onExpandToHome={() => setActiveWorkspace('home')}
+            />
+          )}
+        </ErrorBoundary>
       </main>
     </div>
   );

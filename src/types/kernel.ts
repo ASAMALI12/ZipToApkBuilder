@@ -18,6 +18,8 @@ export type IntentEnum =
   | 'INTENT_TEACH_KERNEL'
   | 'INTENT_NAVIGATE_BACK'
   | 'INTENT_CLOSE_MIC'
+  | 'INTENT_INTERRUPT_SPEECH'
+  | 'INTENT_EXECUTE_COMMAND'
   | 'INTENT_UNKNOWN_DYNAMIC'
   | 'INTENT_GENERAL_QUERY';
 
@@ -50,9 +52,44 @@ export interface BoundKernel {
   isActive: boolean;
 }
 
+export type DiagnosticFaultOrigin = 'KERNEL' | 'ENGINE' | 'PERMISSION' | 'NETWORK' | 'NONE';
+
+export type DiagnosticDefectType =
+  | 'KERNEL_KNOWLEDGE_MISSING' // النواة ليس لها معرفة بهذا الأمر - يلزم تعليمها
+  | 'KERNEL_LIBRARY_REQUIRED'  // النواة تفتقر إلى مكتبة مساعدة - يلزم إرفاق مكتبة
+  | 'ENGINE_UNSUPPORTED'       // المحرك لا يدعم هذا الإجراء تقنياً
+  | 'ENGINE_QUOTA_LIMIT'       // استنفاد حصة المحرك في الذكاء الاصطناعي
+  | 'ENGINE_PERMISSION'        // نقص في صلاحيات النظام أو الميكروفون
+  | 'NONE';
+
+export interface KernelDiagnosticReport {
+  hasDefect: boolean;
+  origin: DiagnosticFaultOrigin; // 'KERNEL' (النواة) أو 'ENGINE' (المحرك)
+  defectType: DiagnosticDefectType;
+  title: string;              // عنوان التشخيص
+  cause: string;              // سبب الخلل بالتفصيل
+  suggestedAction: string;    // الإجراء والحل المقترح (تعليم النواة / إرفاق مكتبة / قيود المحرك)
+  recommendedRoute?: WorkspaceType; // صفحة التوجيه المقترحة (مثل kernel_trainer أو app_builder)
+  missingLibraryName?: string;
+  commandRequested?: string;
+  technicalDetails?: string;
+}
+
+export interface KernelAttachedLibrary {
+  id: string;
+  name: string;
+  category: 'graphics' | 'audio' | 'data' | 'ai' | 'computation';
+  version: string;
+  isAttached: boolean;
+  description: string;
+}
+
 export interface IntentParameters {
   target?: string;
   raw_utterance: string;
+  prompt?: string;
+  appType?: string;
+  diagnostic?: KernelDiagnosticReport;
   [key: string]: any;
 }
 
@@ -63,6 +100,7 @@ export interface IntentResult {
   ui_action: UIAction | string;
   assistant_response: string;
   voice_spoken_text: string;
+  diagnostic?: KernelDiagnosticReport;
   dynamic_schema?: DynamicUISchema;
   hasAudioResponse?: boolean;
 }

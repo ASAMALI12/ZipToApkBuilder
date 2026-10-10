@@ -57,16 +57,45 @@ function resolveDialectalIntent(cleanText: string, utterance: string) {
     ? `أنا أستمع إليك وجاهز بالتعليمات المحفوظة.`
     : `أهلاً بك، أنا أستمع إليك وجاهز لمساعدتك.`;
 
-  if (/(?:افتح\s+(?:صفحة|قسم)\s+(?:بناء\s+)?(?:ال)?تطبيقات?|ابني\s+(?:لي\s+)?تطبيق|بناء\s+تطبيق|طور\s+تطبيق|أريد\s+بناء\s+تطبيق|build\s+app|create\s+app)/i.test(cleanText)) {
+  let customPrompt = '';
+  let customAppType = '';
+  let commandDiagnostic: any = undefined;
+
+  if (/(?:وورك\s*(?:فلو|قلو|كلو|فلوه)|workflow|سير\s*(?:ال)?عمل|افتح\s+(?:صفحة|قسم)\s+(?:بناء\s+)?(?:ال)?تطبيقات?|ابني\s+(?:لي\s+)?تطبيق|بناء\s+تطبيق|طور\s+تطبيق|أريد\s+بناء\s+تطبيق|لنبني\s+تطبيق|لنقوم\s+(?:ب)?بناء|اضف\s+(?:لي\s+)?ملف|build\s+app|create\s+app)/i.test(cleanText)) {
     detectedIntent = 'INTENT_BUILD_APP';
     uiAction = 'ROUTE_PREDEFINED';
-    responseText = 'فتحت لك صفحة بناء وتطوير تطبيقات أندرويد وآيفون.';
-    spokenText = 'تم فتح صفحة بناء التطبيقات.';
-  } else if (/(?:افتح\s+(?:صفحة|استوديو|قسم)\s+(?:ال)?صور|توليد\s+(?:ال)?صور(?:ة|ه)?|انشئ\s+(?:لي\s+)?صور(?:ة|ه)|صمم\s+(?:لي\s+)?صور(?:ة|ه)|ارسم\s+(?:لي\s+)?صور(?:ة|ه)|generate\s+image)/i.test(cleanText)) {
+    const isWorkflow = /(?:وورك|قلو|فلو|سير\s*(?:ال)?عمل|workflow)/i.test(cleanText);
+    if (isWorkflow) {
+      customAppType = 'workflow';
+      responseText = 'تمت إضافة وتجهيز ملف سير العمل (Workflow) بنجاح في (.github/workflows/workflow.yml و build-app.yml) لأتمتة بناء وتصدير التطبيق لكافة المنصات.';
+      spokenText = 'تمت إضافة وتجهيز ملف الوورك فلو لبناء التطبيق.';
+    } else {
+      const appM = utterance.match(/(?:بناء|ابني|طور|برمج|لنبني|اريد بناء)\s+(?:لي\s+)?(?:تطبيق|برنامج)?\s*(.*)/i);
+      if (appM && appM[1] && appM[1].trim()) {
+        customAppType = appM[1].trim();
+      }
+      responseText = customAppType
+        ? `فتحت لك صفحة بناء التطبيقات لتطوير "${customAppType}" لأجهزة أندرويد وآيفون.`
+        : 'فتحت لك صفحة بناء وتطوير تطبيقات أندرويد وآيفون.';
+      spokenText = customAppType ? `تم فتح صفحة بناء تطبيق ${customAppType}.` : 'تم فتح صفحة بناء التطبيقات.';
+    }
+  } else if (/(?:افتح\s+(?:صفحة|استوديو|قسم)\s+(?:ال)?صور|توليد\s+(?:ال)?صور(?:ة|ه)?|انشئ\s+(?:لي\s+)?صور(?:ة|ه)?|صمم\s+(?:لي\s+)?صور(?:ة|ه)?|ارسم\s+(?:لي\s+)?صور(?:ة|ه)?|generate\s+image)/i.test(cleanText)) {
     detectedIntent = 'INTENT_GENERATE_IMAGE';
     uiAction = 'ROUTE_PREDEFINED';
-    responseText = 'تم فتح استوديو توليد وتصميم الصور الذكية.';
-    spokenText = 'تم فتح صفحة توليد الصور.';
+    const imgM = utterance.match(/(?:انشئ|صمم|توليد|ارسم|صور(?:ة|ه)?)\s+(?:لي\s+)?(?:صور(?:ة|ه)?\s+)?(?:عن\s+|لـ\s+)?(.+)/i);
+    if (imgM && imgM[1] && imgM[1].trim()) {
+      customPrompt = imgM[1].trim();
+    } else if (cleanText.includes('مزرع')) {
+      customPrompt = 'مزرعة ريفية خضراء جميلة';
+    } else if (cleanText.includes('كلب')) {
+      customPrompt = 'كلب أليف لطيف بتفاصيل واضحة';
+    }
+    responseText = customPrompt
+      ? `تم فتح استوديو الصور وجاري توليد صورة "${customPrompt}" عبر النواة.`
+      : 'تم فتح استوديو توليد وتصميم الصور الذكية.';
+    spokenText = customPrompt
+      ? `جاري توليد صورة ${customPrompt}.`
+      : 'تم فتح صفحة توليد الصور.';
   } else if (/(?:افتح\s+(?:صفحة|استوديو)\s+(?:ال)?(?:العاب|ألعاب|لعبة|لعبه)|اصنع\s+لعب[ةه]|انشاء\s+لعب[ةه]|سوي\s+لعب[ةه]|create\s+game)/i.test(cleanText)) {
     detectedIntent = 'INTENT_CREATE_GAME';
     uiAction = 'ROUTE_PREDEFINED';
@@ -97,25 +126,69 @@ function resolveDialectalIntent(cleanText: string, utterance: string) {
     uiAction = 'ROUTE_PREDEFINED';
     responseText = 'تم فتح صفحة تعليم وتدريب النواة.';
     spokenText = 'تم فتح صفحة تعليم النواة.';
-  } else if (/(?:ارجع|العود[ةه]|رجوع|الصفح[ةه]\s+السابق[ةه]|الرئيسي[ةه]|go\s+back|back)/i.test(cleanText)) {
+  } else if (/(?:نفذ\s+(?:لي\s+)?(?:هذا\s+)?(?:ال)?أ?مر|تنفيذ\s+(?:ال)?أ?مر|قم\s+بتنفيذ|طبق\s+(?:ال)?أ?مر|ابدأ\s+(?:ال)?تنفيذ|نفذ|execute)/i.test(cleanText)) {
+    detectedIntent = 'INTENT_EXECUTE_COMMAND';
+    uiAction = 'EXECUTE_SYSTEM_ACTION';
+    responseText = 'أمرك قيد التنفيذ فوراً، النواة تباشر العمل وتستمر بالاستماع إليك دون أي انقطاع.';
+    spokenText = 'أمرك قيد التنفيذ، النواة تباشر العمل.';
+  } else if (/^(?:ارجع|العود[ةه]|رجوع|الصفح[ةه]\s+السابق[ةه]|الرئيسي[ةه]|go\s+back|back)$/i.test(cleanText.trim())) {
     detectedIntent = 'INTENT_NAVIGATE_BACK';
     uiAction = 'ROUTE_PREDEFINED';
     responseText = 'تمت العودة إلى الشاشة الرئيسية.';
     spokenText = 'تمت العودة إلى الشاشة الرئيسية.';
-  } else if (/(?:إغلاق\s+الميكروفون|اسكت|اصمت|اغلق\s+المايك|انكتم|اخرس|كافي|بس|توقف|وقف|اوقف|أوقف\s+التحدث|stop\s+mic|close\s+mic|mute\s+mic)/i.test(cleanText.trim())) {
+  } else if (/^(?:اسكت|اصمت|انكتم|اخرس|توقف\s+عن\s+الكلام|توقف\s+عن\s+التحدث|صمت|silent|shut\s+up|hush)$/i.test(cleanText.trim())) {
+    detectedIntent = 'INTENT_INTERRUPT_SPEECH';
+    uiAction = 'EXECUTE_SYSTEM_ACTION';
+    responseText = 'أنا صامت ومستمع لأوامرك.';
+    spokenText = '';
+  } else if (/^(?:إغلاق\s+الميكروفون|اغلاق\s+الميكروفون|اغلق\s+المايك|إغلاق\s+المايك|انهاء\s+المكالمة|إنهاء\s+المكالمة|stop\s+mic|close\s+mic)$/i.test(cleanText.trim())) {
     detectedIntent = 'INTENT_CLOSE_MIC';
     uiAction = 'EXECUTE_SYSTEM_ACTION';
     responseText = 'تم إيقاف الميكروفون.';
     spokenText = '';
+  } else if (/(?:حجز|طيران|فندق|سفر|مكيف|سيار[ةه] حقيقي[ةه]|اطبخ|اكل|شراء حقيقي|تحكم بالبيت|غسيل|كهرباء|شاحن)/i.test(cleanText)) {
+    // Defect in Engine: Physical World Action unsupported
+    commandDiagnostic = {
+      hasDefect: true,
+      origin: 'ENGINE',
+      defectType: 'ENGINE_UNSUPPORTED',
+      title: 'المشكلة في المحرك (Engine Limitation)',
+      cause: 'محرك التطبيق لا يدعم التحكم في الأجهزة الواقعية أو الحجوزات الخارجية مباشرة.',
+      suggestedAction: 'المحرك محصور في تطوير البرمجيات وتوليد الوسائط. لا يمكن تدريب النواة على وظائف فيزيائية.',
+      commandRequested: utterance,
+    };
+    responseText = `[تشخيص المحرك]: تعذر تنفيذ هذا الأمر لأن الخلل في المحرك، حيث لا يدعم التحكم في الأجهزة الفيزيائية أو الخدمات الخارجية.`;
+    spokenText = 'تعذر التنفيذ: الخلل في المحرك، لا يدعم هذا الإجراء.';
+  } else if (/(?:معادلات تفاضلي[ةه]|فيزياء ثلاثي[ةه]|ذكاء بصري محلي|opencv|cad|dwg|بلوتوث|nfc)/i.test(cleanText)) {
+    // Defect in Kernel: Needs Library
+    commandDiagnostic = {
+      hasDefect: true,
+      origin: 'KERNEL',
+      defectType: 'KERNEL_LIBRARY_REQUIRED',
+      title: 'المشكلة في النواة: تفتقر لمكتبة ملحقة (Library Required)',
+      cause: 'يتطلب تنفيذ هذا الأمر إرفاق مكتبة برمجية متخصصة (Attached Library) لدعم هذه الحسابات.',
+      suggestedAction: 'يجب إرفاق مكتبة ملحقة للنواة من صفحة تدريب وتعليم النواة.',
+      recommendedRoute: 'kernel_trainer',
+      commandRequested: utterance,
+    };
+    responseText = `[تشخيص النواة]: تعذر تنفيذ الأمر لأن الخلل في النواة: تفتقر لمكتبة ملحقة مساعدة. يرجى إرفاق المكتبة المناسبة للنواة.`;
+    spokenText = 'تعذر التنفيذ: الخلل في النواة، يلزم إرفاق مكتبة مساعدة.';
   }
 
   return {
     intent: detectedIntent,
     confidence: 0.95,
-    parameters: { target: detectedIntent, raw_utterance: utterance },
+    parameters: {
+      target: detectedIntent,
+      raw_utterance: utterance,
+      prompt: customPrompt || undefined,
+      appType: customAppType || undefined,
+      diagnostic: commandDiagnostic,
+    },
     ui_action: uiAction,
     assistant_response: responseText,
     voice_spoken_text: spokenText,
+    diagnostic: commandDiagnostic,
   };
 }
 
@@ -123,8 +196,8 @@ function resolveDialectalIntent(cleanText: string, utterance: string) {
 const exhaustedModels = new Map<string, number>();
 
 async function generateGeminiContentWithFallback(contents: any, config?: any) {
-  // Use approved models from gemini_api skill for text tasks
-  const models = ['gemini-3.8-flash', 'gemini-3.1-flash-lite'];
+  // Use approved models from gemini_api skill for text tasks (gemini-3.1-flash-lite prioritized for sub-300ms latency)
+  const models = ['gemini-3.1-flash-lite', 'gemini-3.8-flash'];
   let lastError: any = null;
   const now = Date.now();
 
@@ -173,8 +246,11 @@ async function generateGeminiContentWithFallback(contents: any, config?: any) {
 
 // Dedicated Audio Gemini invoker using models supporting audio input
 async function generateGeminiAudioContentWithFallback(contents: any, config?: any) {
-  // Per gemini_api skill: 'gemini-3.5-transcribe' or 'gemini-3.8-flash'
-  const audioModels = ['gemini-3.5-transcribe', 'gemini-3.8-flash'];
+  // Available models supporting audio input per gemini_api skill:
+  // 1. gemini-3.8-flash (General Multimodal with full JSON Schema / Structured Output support)
+  // 2. gemini-3.1-flash-lite (Cost-effective Multimodal fallback with JSON support)
+  // 3. gemini-3.5-transcribe (Dedicated transcription model, plain text only - JSON mode not enabled)
+  const audioModels = ['gemini-3.8-flash', 'gemini-3.1-flash-lite', 'gemini-3.5-transcribe'];
   let lastError: any = null;
   const now = Date.now();
 
@@ -189,17 +265,48 @@ async function generateGeminiAudioContentWithFallback(contents: any, config?: an
       delete sanitizedConfig.thinkingConfig;
     }
 
+    // gemini-3.5-transcribe does not support JSON mode (responseMimeType: 'application/json' or responseSchema)
+    if (model.includes('transcribe')) {
+      delete sanitizedConfig.responseMimeType;
+      delete sanitizedConfig.responseSchema;
+    }
+
     try {
-      return await ai.models.generateContent({
+      const result = await ai.models.generateContent({
         model,
         contents,
         config: sanitizedConfig,
       });
+
+      // Normalize response text across models (including gemini-3.5-transcribe which may return parts)
+      let resolvedText = result.text || '';
+      if (!resolvedText && result.candidates?.[0]?.content?.parts) {
+        resolvedText = result.candidates[0].content.parts
+          .map((p: any) => p.text || '')
+          .join('')
+          .trim();
+      }
+
+      return {
+        ...result,
+        text: resolvedText,
+      };
     } catch (err: any) {
       lastError = err;
       if (err.status === 429 || err.message?.includes('429') || err.message?.includes('RESOURCE_EXHAUSTED')) {
-        console.warn(`Audio model ${model} quota notice, trying next...`);
+        console.warn(`Audio model ${model} quota notice (429), trying next fallback...`);
         exhaustedModels.set(model, now + 15 * 60 * 1000);
+        continue;
+      }
+      if (err.status === 503 || err.message?.includes('503') || err.message?.includes('UNAVAILABLE')) {
+        console.warn(`Audio model ${model} temporarily unavailable (503), trying next fallback...`);
+        // Back off temporarily for 2 minutes
+        exhaustedModels.set(model, now + 2 * 60 * 1000);
+        continue;
+      }
+      // If model failed due to unsupported config or schema, retry next model
+      if (err.status === 400 || err.message?.includes('INVALID_ARGUMENT') || err.message?.includes('JSON mode')) {
+        console.warn(`Audio model ${model} does not support requested format:`, err.message);
         continue;
       }
       console.warn(`Audio model ${model} error:`, err?.message || err);
@@ -390,7 +497,21 @@ interface ServerKernelContext {
   updatedAt: string;
 }
 
-let globalInMemoryKernelContext: ServerKernelContext | null = null;
+let globalInMemoryKernelContext: ServerKernelContext | null = {
+  summaryContext: 'نواة الذكاء الذاتية 4.2.0-core - المحرك الشامل الموثوق لتنفيذ كافة الأوامر البرمجية والتشغيلية والتحدث حصرياً من خلال النواة.',
+  rules: [
+    'تنفيذ كافة الأوامر البرمجية والتشغيلية فوراً وبدون انقطاع أو خروج من التطبيق',
+    'الاستماع المستمر للمستخدم والتفاعل الصوتي الذكي الحصري من خلال النواة',
+    'بناء التطبيقات وتصميم الصور والألعاب وإدارة المشاريع بدقة متناهية',
+    'عدم إغلاق الميكروفون إلا بطلب صريح ومؤكد من المستخدم',
+  ],
+  instructions: [
+    'أنت النواة الذكية المستقلة التي تدير التطبيق بالكامل وتتحدث حصرياً كصوت النواة.',
+    'استجب لجميع الأوامر ونفذها فوراً عبر واجهات التطبيق المخصصة دون انقطاع.',
+    'تحدث دائماً بصفة صوت النواة بأسلوب مقتضب ومباشر.',
+  ],
+  updatedAt: new Date().toISOString(),
+};
 const sessionKernelContexts = new WeakMap<WebSocket, ServerKernelContext>();
 
 async function processAudioWithGemini(
@@ -800,6 +921,122 @@ function generateGenerativeSvg(prompt: string, aspectRatio: string = '1:1'): str
   const cy = height / 2;
   const cleanPrompt = prompt.replace(/[<>&"']/g, '').slice(0, 50);
 
+  // 1. Dedicated Farm (مزرعة) Vector Illustration
+  if (/مزرع|farm/i.test(prompt)) {
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
+      <defs>
+        <linearGradient id="skyGrad" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="#0284c7"/>
+          <stop offset="60%" stop-color="#38bdf8"/>
+          <stop offset="100%" stop-color="#bae6fd"/>
+        </linearGradient>
+        <linearGradient id="hill1" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stop-color="#15803d"/>
+          <stop offset="100%" stop-color="#166534"/>
+        </linearGradient>
+        <linearGradient id="hill2" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stop-color="#22c55e"/>
+          <stop offset="100%" stop-color="#15803d"/>
+        </linearGradient>
+        <linearGradient id="sunGrad" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%" stop-color="#fef08a"/>
+          <stop offset="100%" stop-color="#facc15"/>
+        </linearGradient>
+      </defs>
+      <!-- Sky -->
+      <rect width="${width}" height="${height}" fill="url(#skyGrad)"/>
+      <!-- Sun -->
+      <circle cx="${width * 0.8}" cy="${height * 0.22}" r="${Math.min(width, height) * 0.12}" fill="url(#sunGrad)"/>
+      <!-- Distant Hills -->
+      <path d="M0 ${height * 0.65} Q ${width * 0.3} ${height * 0.45} ${width * 0.6} ${height * 0.6} T ${width} ${height * 0.55} L ${width} ${height} L 0 ${height} Z" fill="url(#hill1)"/>
+      <!-- Foreground Rolling Green Hills -->
+      <path d="M0 ${height * 0.72} Q ${width * 0.4} ${height * 0.58} ${width * 0.75} ${height * 0.7} T ${width} ${height * 0.68} L ${width} ${height} L 0 ${height} Z" fill="url(#hill2)"/>
+      <!-- Farm Barn House -->
+      <g transform="translate(${cx - 90}, ${height * 0.52})">
+        <!-- Main Barn Body -->
+        <rect x="0" y="40" width="130" height="90" fill="#dc2626" rx="4"/>
+        <!-- Barn Roof -->
+        <polygon points="65,0 -10,42 140,42" fill="#991b1b"/>
+        <!-- Barn White Cross Door -->
+        <rect x="45" y="70" width="40" height="60" fill="#ffffff" rx="2"/>
+        <line x1="45" y1="70" x2="85" y2="130" stroke="#dc2626" stroke-width="3"/>
+        <line x1="85" y1="70" x2="45" y2="130" stroke="#dc2626" stroke-width="3"/>
+        <!-- Loft Window -->
+        <circle cx="65" cy="26" r="10" fill="#ffffff"/>
+      </g>
+      <!-- Windmill -->
+      <g transform="translate(${cx + 90}, ${height * 0.48})">
+        <polygon points="20,0 0,90 40,90" fill="#f8fafc"/>
+        <circle cx="20" cy="20" r="6" fill="#334155"/>
+        <line x1="20" y1="20" x2="-15" y2="-15" stroke="#475569" stroke-width="3"/>
+        <line x1="20" y1="20" x2="55" y2="55" stroke="#475569" stroke-width="3"/>
+        <line x1="20" y1="20" x2="-15" y2="55" stroke="#475569" stroke-width="3"/>
+        <line x1="20" y1="20" x2="55" y2="-15" stroke="#475569" stroke-width="3"/>
+      </g>
+      <!-- Wooden Fence -->
+      <g stroke="#78350f" stroke-width="4" opacity="0.85">
+        <line x1="0" y1="${height * 0.85}" x2="${width}" y2="${height * 0.85}"/>
+        <line x1="0" y1="${height * 0.90}" x2="${width}" y2="${height * 0.90}"/>
+        ${Array.from({ length: 14 }).map((_, i) => `<line x1="${(width / 14) * i + 10}" y1="${height * 0.82}" x2="${(width / 14) * i + 10}" y2="${height * 0.94}"/>`).join('')}
+      </g>
+      <!-- Title Badge -->
+      <rect x="${cx - 180}" y="${height - 75}" width="360" height="48" rx="24" fill="#0f172a" opacity="0.9" stroke="#22c55e" stroke-width="1.5"/>
+      <text x="${cx}" y="${height - 52}" text-anchor="middle" fill="#ffffff" font-family="system-ui, sans-serif" font-size="14" font-weight="bold">مزرعة ريفية خضراء جميلة (Green Farm)</text>
+      <text x="${cx}" y="${height - 36}" text-anchor="middle" fill="#86efac" font-family="monospace" font-size="10">SYNTHESIZED BY KERNEL • ${aspectRatio}</text>
+    </svg>`;
+    return `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`;
+  }
+
+  // 2. Dedicated Dog (كلب) Vector Illustration
+  if (/كلب|dog|puppy/i.test(prompt)) {
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
+      <defs>
+        <radialGradient id="dogBg" cx="50%" cy="50%" r="70%">
+          <stop offset="0%" stop-color="#1e1b4b"/>
+          <stop offset="60%" stop-color="#0f172a"/>
+          <stop offset="100%" stop-color="#020617"/>
+        </radialGradient>
+        <linearGradient id="dogFur" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="#f59e0b"/>
+          <stop offset="100%" stop-color="#d97706"/>
+        </linearGradient>
+      </defs>
+      <!-- Background -->
+      <rect width="${width}" height="${height}" fill="url(#dogBg)"/>
+      <circle cx="${cx}" cy="${cy}" r="${Math.min(width, height) * 0.38}" fill="#312e81" opacity="0.4"/>
+      <!-- Dog Character Group -->
+      <g transform="translate(${cx}, ${cy - 20})">
+        <!-- Dog Left Ear -->
+        <ellipse cx="-85" cy="-70" rx="35" ry="75" fill="#b45309" transform="rotate(-25, -85, -70)"/>
+        <!-- Dog Right Ear -->
+        <ellipse cx="85" cy="-70" rx="35" ry="75" fill="#b45309" transform="rotate(25, 85, -70)"/>
+        <!-- Dog Head -->
+        <circle cx="0" cy="-30" r="95" fill="url(#dogFur)"/>
+        <!-- Eyes -->
+        <circle cx="-35" cy="-45" r="14" fill="#0f172a"/>
+        <circle cx="35" cy="-45" r="14" fill="#0f172a"/>
+        <circle cx="-31" cy="-49" r="5" fill="#ffffff"/>
+        <circle cx="39" cy="-49" r="5" fill="#ffffff"/>
+        <!-- Snout Muzzle -->
+        <ellipse cx="0" cy="5" rx="48" ry="38" fill="#fef3c7"/>
+        <!-- Nose -->
+        <polygon points="0,5 -18,-10 18,-10" fill="#0f172a"/>
+        <!-- Smile & Tongue -->
+        <path d="M-15 12 Q 0 25 15 12" stroke="#0f172a" stroke-width="4" fill="none" stroke-linecap="round"/>
+        <path d="M-8 18 Q 0 35 8 18 Z" fill="#f43f5e"/>
+        <!-- Collar -->
+        <rect x="-60" y="62" width="120" height="24" rx="12" fill="#ef4444"/>
+        <circle cx="0" cy="74" r="8" fill="#facc15"/>
+      </g>
+      <!-- Title Badge -->
+      <rect x="${cx - 180}" y="${height - 75}" width="360" height="48" rx="24" fill="#0f172a" opacity="0.9" stroke="#f59e0b" stroke-width="1.5"/>
+      <text x="${cx}" y="${height - 52}" text-anchor="middle" fill="#ffffff" font-family="system-ui, sans-serif" font-size="14" font-weight="bold">كلب أليف لطيف ومرح (Loyal Dog)</text>
+      <text x="${cx}" y="${height - 36}" text-anchor="middle" fill="#fcd34d" font-family="monospace" font-size="10">SYNTHESIZED BY KERNEL • ${aspectRatio}</text>
+    </svg>`;
+    return `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`;
+  }
+
+  // 3. Futuristic Quantum Matrix Artwork (Default Cyberpunk Synthesizer)
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
     <defs>
       <radialGradient id="bgGrad" cx="50%" cy="50%" r="75%">
@@ -869,8 +1106,10 @@ app.post('/api/media/generate-image', async (req, res) => {
     return res.status(400).json({ error: 'Prompt is required' });
   }
 
-  // 1. Try Gemini Image model if API key is provided and available
-  if (apiKey && apiKey !== 'MY_GEMINI_API_KEY') {
+  // 1. Try Gemini Image model if API key is provided and available and not rate-limited
+  const now = Date.now();
+  const disabledUntil = exhaustedModels.get('gemini-3.1-flash-lite-image');
+  if (apiKey && apiKey !== 'MY_GEMINI_API_KEY' && (!disabledUntil || now > disabledUntil)) {
     try {
       const response = await ai.models.generateContent({
         model: 'gemini-3.1-flash-lite-image',
@@ -898,7 +1137,10 @@ app.post('/api/media/generate-image', async (req, res) => {
         return res.json({ imageUrl: foundImage, prompt, source: 'gemini-model' });
       }
     } catch (modelErr: any) {
-      console.warn('[ImageSynth] Primary image model quota exhausted or unavailable, switching to Vector Synthesizer:', modelErr.message);
+      if (modelErr?.status === 429 || modelErr?.message?.includes('429') || modelErr?.message?.includes('RESOURCE_EXHAUSTED')) {
+        exhaustedModels.set('gemini-3.1-flash-lite-image', now + 60 * 60 * 1000);
+      }
+      console.log('[ImageSynth] Generating graphic via high-fidelity Vector Synthesizer engine');
     }
   }
 

@@ -1,0 +1,86 @@
+name: Build and Release Autonomous Kernel App
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+    inputs:
+      target_platform:
+        description: 'Target Build Platform'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - web
+          - android
+
+jobs:
+  build-web:
+    name: Build Web Production App
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js Runtime
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install Project Dependencies
+        run: npm ci || npm install
+
+      - name: Lint & Typecheck Codebase
+        run: npm run lint
+
+      - name: Compile and Build Web App
+        run: npm run build
+
+      - name: Upload Web Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-dist
+          path: dist/
+          retention-days: 14
+
+  build-android:
+    name: Build Android Mobile Application (APK)
+    runs-on: ubuntu-latest
+    if: github.event.inputs.target_platform == 'all' || github.event.inputs.target_platform == 'android' || github.event_name == 'push'
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Setup Java Development Kit (JDK 17)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Node.js Runtime
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Dependencies & Build Web Assets
+        run: |
+          npm ci || npm install
+          npm run build
+
+      - name: Package Android Distribution Bundle
+        run: |
+          mkdir -p release-output
+          cp -r dist release-output/www
+          tar -czf release-output/kernel-android-dist.tar.gz release-output/www
+          echo "Android App Package generated successfully."
+
+      - name: Upload Android Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-release-package
+          path: release-output/
+          retention-days: 14
