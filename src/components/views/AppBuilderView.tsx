@@ -104,7 +104,7 @@ jobs:
     name: 3. Build & Package Android Mobile App
     needs: validate-and-lint
     runs-on: ubuntu-latest
-    if: github.event.inputs.target_platform == 'all' || github.event.inputs.target_platform == 'android' || github.event_name == 'push'
+    if: github.event.inputs.target_platform == 'all' || github.event.inputs.target_platform == 'android' || github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -125,19 +125,41 @@ jobs:
           npm install --legacy-peer-deps
           npm run build
 
-      - name: Package Android Distribution Bundle
+      - name: Sync Web Assets to Android Project
         run: |
-          mkdir -p release-output/android
-          cp -r dist/* release-output/android/
-          cd release-output
-          tar -czf app-android-release.tar.gz android/
-          echo "Android mobile application package created successfully."
+          npx cap sync android
 
-      - name: Upload Android Release Artifacts
+      - name: Accept Android SDK Licenses
+        run: |
+          yes | sdkmanager --licenses || true
+
+      - name: Make Gradle Executable
+        run: |
+          chmod +x android/gradlew
+
+      - name: Compile and Build Real Android APK (Gradle)
+        run: |
+          cd android
+          ./gradlew assembleDebug --no-daemon --stacktrace
+
+      - name: Prepare APK Release File
+        run: |
+          mkdir -p release-output
+          APK_PATH=$(find android/app/build/outputs/apk -name "*.apk" | head -n 1)
+          if [ -n "$APK_PATH" ] && [ -f "$APK_PATH" ]; then
+            echo "Found APK at: $APK_PATH"
+            cp "$APK_PATH" release-output/NeuroCore-v1.0.apk
+            ls -lh release-output/NeuroCore-v1.0.apk
+          else
+            echo "Error: No APK file generated!"
+            exit 1
+          fi
+
+      - name: Upload Installable Android APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: android-release-package
-          path: release-output/app-android-release.tar.gz
+          name: NeuroCore-Android-APK
+          path: release-output/NeuroCore-v1.0.apk
           retention-days: 14`;
 
   const workflowCode = `# .github/workflows/build-app.yml
@@ -192,7 +214,7 @@ jobs:
   build-android:
     name: Build Android Mobile Application (APK)
     runs-on: ubuntu-latest
-    if: github.event.inputs.target_platform == 'all' || github.event.inputs.target_platform == 'android' || github.event_name == 'push'
+    if: github.event.inputs.target_platform == 'all' || github.event.inputs.target_platform == 'android' || github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     steps:
       - name: Checkout Source Code
         uses: actions/checkout@v4
@@ -213,18 +235,41 @@ jobs:
           npm install --legacy-peer-deps
           npm run build
 
-      - name: Package Android Distribution Bundle
+      - name: Sync Web Assets to Android Project
+        run: |
+          npx cap sync android
+
+      - name: Accept Android SDK Licenses
+        run: |
+          yes | sdkmanager --licenses || true
+
+      - name: Make Gradle Executable
+        run: |
+          chmod +x android/gradlew
+
+      - name: Compile and Build Real Android APK (Gradle)
+        run: |
+          cd android
+          ./gradlew assembleDebug --no-daemon --stacktrace
+
+      - name: Prepare APK Output File
         run: |
           mkdir -p release-output
-          cp -r dist release-output/www
-          tar -czf release-output/kernel-android-dist.tar.gz release-output/www
-          echo "Android App Package generated successfully."
+          APK_PATH=$(find android/app/build/outputs/apk -name "*.apk" | head -n 1)
+          if [ -n "$APK_PATH" ] && [ -f "$APK_PATH" ]; then
+            echo "Found APK at: $APK_PATH"
+            cp "$APK_PATH" release-output/NeuroCore-v1.0.apk
+            ls -lh release-output/NeuroCore-v1.0.apk
+          else
+            echo "Error: No APK file generated!"
+            exit 1
+          fi
 
-      - name: Upload Android Build Artifacts
+      - name: Upload Android APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: android-release-package
-          path: release-output/
+          name: NeuroCore-Android-APK
+          path: release-output/NeuroCore-v1.0.apk
           retention-days: 14`;
 
   const androidCode = `package com.kernel.app

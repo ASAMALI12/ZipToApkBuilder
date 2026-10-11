@@ -1,0 +1,8 @@
+{
+	"appId": "com.neurocore.app",
+	"appName": "NeuroCore",
+	"webDir": "dist",
+	"server": {
+		"androidScheme": "https"
+	}
+}
