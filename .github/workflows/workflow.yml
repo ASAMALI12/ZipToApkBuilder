@@ -4,43 +4,59 @@ on:
   push:
     branches:
       - '**'
-    tags:
-      - 'v*'
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
+    name: Build NeuroCore Android APK
     runs-on: ubuntu-latest
-    
+
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Set up JDK 17
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install Dependencies
+        run: npm install --legacy-peer-deps
+
+      - name: Build Web Application
+        run: npm run build
+
+      - name: Sync Capacitor Android Project
+        run: npx cap sync android
+
+      - name: Set up Java JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Grant execute permission for gradlew
-        run: chmod +x gradlew
-        continue-on-error: true
+      - name: Grant Execute Permission to Gradlew
+        run: chmod +x android/gradlew
 
-      - name: Build APK with Gradle
+      - name: Build Android Debug APK
         run: |
-          if [ -f "gradlew" ]; then
-            ./gradlew assembleDebug
-          else
-            echo "Gradle wrapper not found, simulating build setup..."
-            mkdir -p build/outputs/apk/debug
-            echo "Dummy APK content for NeuroCore" > build/outputs/apk/debug/app-debug.apk
-          fi
+          cd android
+          ./gradlew assembleDebug --stacktrace
 
-      - name: Upload APK Artifact
+      - name: Prepare APK Output
+        run: |
+          mkdir -p release-output
+          cp android/app/build/outputs/apk/debug/app-debug.apk release-output/NeuroCore.apk
+
+      - name: Upload APK as Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: NeuroCore-Debug-APK
-          path: |
-            **/build/outputs/apk/debug/*.apk
-            *.apk
+          name: NeuroCore-APK
+          path: release-output/NeuroCore.apk
+          retention-days: 30
+
