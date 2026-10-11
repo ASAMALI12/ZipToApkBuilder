@@ -200,6 +200,131 @@ export async function exportKernelStateZip(options: {
 }
 
 /**
+ * Generates and bundles a complete native mobile/web application project as a downloadable ZIP package
+ */
+export async function exportGeneratedAppZip(options: {
+  appName: string;
+  platform: 'android' | 'ios' | 'react';
+  mainCode: string;
+}): Promise<Blob> {
+  const zip = new JSZip();
+  const cleanName = options.appName.replace(/[^a-zA-Z0-9_\u0600-\u06FF]/g, '_') || 'Kernel_App';
+
+  if (options.platform === 'android') {
+    zip.file(
+      'app/src/main/AndroidManifest.xml',
+      `<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.kernel.${cleanName.toLowerCase()}">
+    <uses-permission android:name="android.permission.INTERNET" />
+    <application
+        android:allowBackup="true"
+        android:icon="@mipmap/ic_launcher"
+        android:label="${options.appName}"
+        android:theme="@style/Theme.Material3.DayNight">
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>`
+    );
+
+    zip.file('app/src/main/java/com/kernel/MainActivity.kt', options.mainCode);
+
+    zip.file(
+      'build.gradle.kts',
+      `plugins {
+    id("com.android.application") version "8.2.0"
+    id("org.jetbrains.kotlin.android") version "1.9.22"
+}
+android {
+    namespace = "com.kernel.${cleanName.toLowerCase()}"
+    compileSdk = 34
+    defaultConfig {
+        applicationId = "com.kernel.${cleanName.toLowerCase()}"
+        minSdk = 26
+        targetSdk = 34
+        versionCode = 1
+        versionName = "1.0"
+    }
+    buildFeatures {
+        compose = true
+    }
+    composeOptions {
+        kotlinCompilerExtensionVersion = "1.5.8"
+    }
+}
+dependencies {
+    implementation("androidx.core:core-ktx:1.12.0")
+    implementation("androidx.activity:activity-compose:1.8.2")
+    implementation(platform("androidx.compose:compose-bom:2024.02.00"))
+    implementation("androidx.compose.ui:ui")
+    implementation("androidx.compose.material3:material3")
+}`
+    );
+
+    zip.file(
+      'README.md',
+      `# ${options.appName} (Android Jetpack Compose)
+تم بناء وتصدير هذا التطبيق عبر نواة الذكاء الاصطناعي (The Kernel).
+- افتح المشروع في Android Studio.
+- قم بتشغيل التطبيق على الهاتف أو المحاكي.`
+    );
+  } else if (options.platform === 'ios') {
+    zip.file('Sources/ContentView.swift', options.mainCode);
+    zip.file(
+      'Sources/App.swift',
+      `import SwiftUI
+
+@main
+struct KernelApp: App {
+    var body: some Scene {
+        WindowGroup {
+            ContentView()
+        }
+    }
+}`
+    );
+    zip.file(
+      'README.md',
+      `# ${options.appName} (iOS SwiftUI)
+تم بناء هذا التطبيق عبر النواة الذكية. افتح المشروع في Xcode 15+ وشغل التطبيق على آيفون.`
+    );
+  } else {
+    zip.file('src/App.tsx', options.mainCode);
+    zip.file(
+      'package.json',
+      JSON.stringify(
+        {
+          name: cleanName.toLowerCase(),
+          version: '1.0.0',
+          private: true,
+          dependencies: {
+            react: '^19.0.0',
+            'react-dom': '^19.0.0',
+            'lucide-react': '^0.546.0',
+          },
+        },
+        null,
+        2
+      )
+    );
+    zip.file('README.md', `# ${options.appName}\nتم إنشاء تطبيق React Web عبر النواة.`);
+  }
+
+  return await zip.generateAsync({
+    type: 'blob',
+    compression: 'DEFLATE',
+    compressionOptions: { level: 6 },
+  });
+}
+
+/**
  * Helper to download any generated blob as a file in the browser
  */
 export function triggerFileDownload(blob: Blob, filename: string) {
@@ -212,3 +337,4 @@ export function triggerFileDownload(blob: Blob, filename: string) {
   document.body.removeChild(a);
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
+

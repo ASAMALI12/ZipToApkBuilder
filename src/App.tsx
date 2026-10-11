@@ -4,10 +4,12 @@ import {
   BoundKernel,
   CallStatus,
   KernelDiagnosticReport,
+  KernelDeliverable,
 } from './types/kernel';
 import { audioEngine } from './services/audioEngine';
 import { parseUtterance, requestTTSAudio, diagnoseCommandDefect } from './services/intentParser';
 import { StorageEngine } from './services/storageEngine';
+import { KernelBridge } from './services/kernelBridge';
 
 import { CentralCallOrb } from './components/voice/CentralCallOrb';
 import { FloatingVoiceOrb } from './components/voice/FloatingVoiceOrb';
@@ -42,7 +44,11 @@ export default function App() {
     StorageEngine.loadBoundKernel()
   );
 
-  // Apply Intent to Router
+  const [latestUserQuestion, setLatestUserQuestion] = useState<string>('');
+  const [currentDeliverable, setCurrentDeliverable] = useState<KernelDeliverable | null>(null);
+  const [isExecutingDeliverable, setIsExecutingDeliverable] = useState<boolean>(false);
+
+  // Apply Intent to Router & Direct Execution Bridge
   const applyIntentRouting = useCallback((
     intent: string,
     responseText?: string,
@@ -51,6 +57,10 @@ export default function App() {
     parameters?: any,
     diagnostic?: KernelDiagnosticReport
   ) => {
+    if (rawUtterance) {
+      setLatestUserQuestion(rawUtterance);
+    }
+
     if (responseText || spokenText) {
       setLastAssistantResponse(responseText || spokenText || '');
     }
@@ -93,41 +103,74 @@ export default function App() {
       return;
     }
 
+    // Direct Kernel Bridge Execution for Image Generation (Wipes previous deliverables)
+    if (intent === 'INTENT_GENERATE_IMAGE') {
+      const promptToGen = parameters?.prompt || (rawUtterance ? rawUtterance.replace(/(?:انشئ|صمم|توليد|ارسم|صورة|سويلي|صور)\s+/gi, '').trim() : '') || 'تصميم رقمي متقن';
+      if (rawUtterance) setLatestUserQuestion(rawUtterance);
+      setIsExecutingDeliverable(true);
+      setCurrentDeliverable(null);
+      setLastAssistantResponse('');
+      KernelBridge.executeImageGeneration(promptToGen).then((item) => {
+        setCurrentDeliverable(item);
+        setIsExecutingDeliverable(false);
+        setLastAssistantResponse(`تم تصميم وتوليد صورة "${promptToGen}" بنجاح، وهي جاهزة للتحميل.`);
+        audioEngine.speak(`تم توليد الصورة عبر النواة، وهي جاهزة للتحميل.`);
+      });
+      return;
+    }
+
+    // Direct Kernel Bridge Execution for Mobile / Web App Building with ZIP Export
+    if (intent === 'INTENT_BUILD_APP') {
+      const isIos = /(?:ايفون|آيفون|ios|swift)/i.test(rawUtterance || '');
+      const platform = isIos ? 'ios' : 'android';
+      const appName = parameters?.appType || (rawUtterance ? rawUtterance.replace(/(?:بناء|ابني|طور|برمج|سوي|تطبيق)\s+/gi, '').trim() : '') || 'تطبيق النواة الذكي';
+      if (rawUtterance) setLatestUserQuestion(rawUtterance);
+      setIsExecutingDeliverable(true);
+      setCurrentDeliverable(null);
+      setLastAssistantResponse('');
+      KernelBridge.executeAppBuild(appName, platform).then((item) => {
+        setCurrentDeliverable(item);
+        setIsExecutingDeliverable(false);
+        setLastAssistantResponse(`تمت برمجة وتجميع تطبيق "${appName}" (${platform === 'android' ? 'أندرويد' : 'آيفون'})، وحزمة الـ ZIP جاهزة للتحميل.`);
+        audioEngine.speak(`تمت برمجة وتجميع التطبيق بالكامل، وحزمة الـ ZIP جاهزة للتحميل إلى هاتفك.`);
+      });
+      return;
+    }
+
     if (intent === 'INTENT_LINK_KERNEL') {
       setActiveActionNotice({ name: 'ربط ملف النواة من الهاتف', workspace: 'kernel_linker' });
       setActiveWorkspace('kernel_linker');
-    } else if (intent === 'INTENT_TEACH_KERNEL') {
+      return;
+    }
+
+    if (intent === 'INTENT_TEACH_KERNEL') {
       setActiveActionNotice({ name: 'صفحة تعليم وتدريب النواة', workspace: 'kernel_trainer' });
       setActiveWorkspace('kernel_trainer');
-    } else if (intent === 'INTENT_BUILD_APP') {
-      setActiveActionNotice({ name: 'صفحة بناء وتطوير التطبيقات', workspace: 'app_builder' });
-      setActiveWorkspace('app_builder');
-    } else if (intent === 'INTENT_GENERATE_IMAGE') {
-      setActiveActionNotice({ name: 'استوديو توليد وتصميم الصور', workspace: 'image_generator' });
-      setActiveWorkspace('image_generator');
-    } else if (intent === 'INTENT_CREATE_GAME') {
-      setActiveActionNotice({ name: 'استوديو صناعة وبرمجة الألعاب', workspace: 'game_builder' });
-      setActiveWorkspace('game_builder');
-    } else if (intent === 'INTENT_CREATE_MEDIA') {
-      setActiveActionNotice({ name: 'استوديو إنتاج الفيديو والصوت', workspace: 'media_studio' });
-      setActiveWorkspace('media_studio');
-    } else if (intent === 'INTENT_CONNECT_GITHUB') {
-      setActiveActionNotice({ name: 'ربط منصة جيت هب', workspace: 'github_bridge' });
-      setActiveWorkspace('github_bridge');
-    } else if (intent === 'INTENT_CONNECT_SUPABASE') {
-      setActiveActionNotice({ name: 'ربط قواعد بيانات سوبابيس', workspace: 'supabase_bridge' });
-      setActiveWorkspace('supabase_bridge');
-    } else {
-      // General Query / Knowledge test / Chat: stay on current screen and converse!
-      setActiveActionNotice(null);
+      return;
     }
-  }, [boundKernel]);
+
+    // Record only the active single question/response (Wipes previous chats)
+    if (responseText || spokenText) {
+      if (rawUtterance) setLatestUserQuestion(rawUtterance);
+      setIsExecutingDeliverable(false);
+      setCurrentDeliverable(null);
+      setLastAssistantResponse(responseText || spokenText || '');
+    }
+  }, [boundKernel, latestUserQuestion]);
 
   // Autonomous Intent Processing via Voice or Text Chat Box (Unified Single Path)
   const processIntentExecution = useCallback(
     async (utteranceText: string) => {
-      if (!utteranceText.trim()) return;
-      await audioEngine.handleDirectTextUtterance(utteranceText.trim());
+      const clean = utteranceText.trim();
+      if (!clean) return;
+      // Immediately wipe previous question and answer
+      setLatestUserQuestion(clean);
+      setCurrentTranscript(clean);
+      setLastAssistantResponse('');
+      setCurrentDeliverable(null);
+      setActiveDiagnostic(null);
+      setIsExecutingDeliverable(true);
+      await audioEngine.handleDirectTextUtterance(clean);
     },
     []
   );
@@ -139,11 +182,19 @@ export default function App() {
     const unsubTranscript = (text: string, isFinal: boolean) => {
       setCurrentTranscript(text);
       setIsInterim(!isFinal);
+      // When a new speech utterance starts, clear previous answer so previous chat disappears
+      if (text.trim() && !isFinal) {
+        setLatestUserQuestion(text.trim());
+        setLastAssistantResponse('');
+        setCurrentDeliverable(null);
+        setActiveDiagnostic(null);
+      }
     };
 
     const unsubResult = (res: any) => {
       if (res.transcript) {
         setCurrentTranscript(res.transcript);
+        setLatestUserQuestion(res.transcript);
       }
       if (res.assistant_response || res.voice_spoken_text) {
         setLastAssistantResponse(res.assistant_response || res.voice_spoken_text || '');
@@ -200,6 +251,8 @@ export default function App() {
     }
   };
 
+  const deliverables = currentDeliverable ? [currentDeliverable] : [];
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-arabic select-none selection:bg-cyan-500/30 selection:text-cyan-200">
       {/* Main Viewport */}
@@ -209,14 +262,18 @@ export default function App() {
           {activeWorkspace === 'home' && (
             <CentralCallOrb
               onQuickIntent={processIntentExecution}
+              userQuestion={latestUserQuestion || currentTranscript}
               currentTranscript={currentTranscript}
               isInterimTranscript={isInterim}
               boundKernel={boundKernel}
+              onBindKernel={handleBindKernel}
               lastAssistantResponse={lastAssistantResponse}
               activeActionNotice={activeActionNotice}
               activeDiagnostic={activeDiagnostic}
               onClearDiagnostic={() => setActiveDiagnostic(null)}
               onOpenWorkspace={(ws) => setActiveWorkspace(ws as WorkspaceType)}
+              deliverables={deliverables}
+              isExecutingDeliverable={isExecutingDeliverable}
             />
           )}
 

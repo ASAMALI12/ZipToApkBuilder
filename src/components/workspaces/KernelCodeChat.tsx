@@ -47,12 +47,12 @@ export const KernelCodeChat: React.FC<KernelCodeChatProps> = ({
       time: new Date().toLocaleTimeString(),
     };
 
-    setMessages((prev) => [...prev, userMsg]);
+    setMessages([userMsg]);
     setInputText('');
 
     // If query is about inspection:
     if (/فحص|لنت|خطأ|صلح|نسينا شي|inspect|lint|repair/i.test(text)) {
-      handleRunLinter(text);
+      handleRunLinter(text, userMsg);
       return;
     }
 
@@ -67,8 +67,8 @@ export const KernelCodeChat: React.FC<KernelCodeChatProps> = ({
       if (res.ok) {
         const data = await res.json();
         const reply = data.assistant_response || 'تم استلام وتوثيق تعليمات النواة.';
-        setMessages((prev) => [
-          ...prev,
+        setMessages([
+          userMsg,
           {
             role: 'assistant',
             text: reply,
@@ -91,8 +91,8 @@ export const KernelCodeChat: React.FC<KernelCodeChatProps> = ({
     }
 
     // Fallback response
-    setMessages((prev) => [
-      ...prev,
+    setMessages([
+      userMsg,
       {
         role: 'assistant',
         text: `تم استيعاب الأمر وحفظه في الذاكرة المستمرة للنواة: "${text}"`,
@@ -101,7 +101,7 @@ export const KernelCodeChat: React.FC<KernelCodeChatProps> = ({
     ]);
   };
 
-  const handleRunLinter = async (customInstruction: string = '') => {
+  const handleRunLinter = async (customInstruction: string = '', originalUserMsg?: { role: 'user'; text: string; time: string }) => {
     setIsLinterRunning(true);
     try {
       const result = await inspectAndRepairFiles(files, customInstruction);
@@ -112,8 +112,14 @@ export const KernelCodeChat: React.FC<KernelCodeChatProps> = ({
         reply += `\nتم رصد ${result.issuesFound.length} مشكلة وتم تجهيز رقع التصحيح.`;
       }
 
-      setMessages((prev) => [
-        ...prev,
+      const activeUser = originalUserMsg || {
+        role: 'user' as const,
+        text: customInstruction || 'فحص الملفات وتصحيح الأخطاء',
+        time: new Date().toLocaleTimeString(),
+      };
+
+      setMessages([
+        activeUser,
         {
           role: 'assistant',
           text: reply,

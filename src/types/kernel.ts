@@ -52,6 +52,31 @@ export interface BoundKernel {
   isActive: boolean;
 }
 
+export type DeliverableType =
+  | 'CHAT_MESSAGE'
+  | 'GENERATED_IMAGE'
+  | 'BUILT_APP_PACKAGE'
+  | 'GENERATED_MEDIA'
+  | 'DOCUMENT'
+  | 'DIAGNOSTIC';
+
+export interface KernelDeliverable {
+  id: string;
+  type: DeliverableType;
+  timestamp: string;
+  userPrompt: string;
+  title: string;
+  content: string;
+  imageUrl?: string;
+  aspectRatio?: string;
+  appName?: string;
+  platform?: 'android' | 'ios' | 'react';
+  codeSnippet?: string;
+  appZipBlob?: Blob;
+  downloadFileName?: string;
+  status: 'PENDING' | 'SUCCESS' | 'ERROR';
+}
+
 export type DiagnosticFaultOrigin = 'KERNEL' | 'ENGINE' | 'PERMISSION' | 'NETWORK' | 'NONE';
 
 export type DiagnosticDefectType =
