@@ -622,7 +622,7 @@ class AudioEngine {
             this.vad.reset();
             this.executeUtterance(finalClean, 'speech');
           } else if (interim.trim().length > 2) {
-            // High-Speed Interim Debounce: Commit speech after 850ms silence even if browser delays isFinal
+            // High-Speed Interim Debounce: Commit speech after 480ms silence even if browser delays isFinal
             this.interimCommitTimer = setTimeout(() => {
               if (this.currentLiveTranscript && this.callStatus === 'LISTENING' && !this.isProcessingAudio) {
                 const text = this.currentLiveTranscript.trim();
@@ -634,7 +634,7 @@ class AudioEngine {
                   this.executeUtterance(text, 'speech');
                 }
               }
-            }, 850);
+            }, 480);
           }
         };
 

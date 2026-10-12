@@ -1,8 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { audioEngine } from '../../services/audioEngine';
-import { CallStatus, BoundKernel, KernelDiagnosticReport, KernelDeliverable } from '../../types/kernel';
+import { CallStatus, BoundKernel } from '../../types/kernel';
 import { KernelBridge } from '../../services/kernelBridge';
-import { triggerFileDownload } from '../../services/zipEngine';
 import {
   Mic,
   MicOff,
@@ -15,24 +14,17 @@ import {
   PhoneOff,
   Square,
   ShieldCheck,
-  BookOpen,
-  Wrench,
-  X,
   FolderOpen,
   Download,
-  FileArchive,
   RefreshCw,
-  Image as ImageIcon,
   Copy,
   Check,
-  Layers,
-  Smartphone,
-  Apple,
   Wifi,
   WifiOff,
-  Server,
+  Share2,
 } from 'lucide-react';
 import { ServerSettingsModal } from '../modals/ServerSettingsModal';
+import { BridgesInspectorModal } from '../modals/BridgesInspectorModal';
 import { testBackendConnection } from '../../services/apiConfig';
 
 interface CentralCallOrbProps {
@@ -43,12 +35,7 @@ interface CentralCallOrbProps {
   boundKernel: BoundKernel | null;
   onBindKernel: (kernel: BoundKernel | null) => void;
   lastAssistantResponse?: string;
-  activeActionNotice?: { name: string; workspace: string } | null;
-  activeDiagnostic?: KernelDiagnosticReport | null;
-  onClearDiagnostic?: () => void;
-  onOpenWorkspace?: (workspace: string) => void;
-  deliverables?: KernelDeliverable[];
-  isExecutingDeliverable?: boolean;
+  imageUrl?: string;
 }
 
 export const CentralCallOrb: React.FC<CentralCallOrbProps> = ({
@@ -59,22 +46,18 @@ export const CentralCallOrb: React.FC<CentralCallOrbProps> = ({
   boundKernel,
   onBindKernel,
   lastAssistantResponse,
-  activeActionNotice,
-  activeDiagnostic,
-  onClearDiagnostic,
-  onOpenWorkspace,
-  deliverables = [],
-  isExecutingDeliverable = false,
+  imageUrl,
 }) => {
   const [callStatus, setCallStatus] = useState<CallStatus>(audioEngine.getStatus());
   const [micEnergy, setMicEnergy] = useState<number>(0);
   const [outputEnergy, setOutputEnergy] = useState<number>(0);
   const [permissionError, setPermissionError] = useState<string | null>(null);
   const [chatInput, setChatInput] = useState<string>('');
-  const [sensitivityPreset, setSensitivityPreset] = useState<'HIGH' | 'NORMAL' | 'NOISE_ISOLATION'>('HIGH');
+  const [sensitivityPreset, setSensitivityPreset] = useState<'HIGH' | 'NORMAL' | 'NOISE_ISOLATION'>('NORMAL');
   const [linkingNotice, setLinkingNotice] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [isServerModalOpen, setIsServerModalOpen] = useState<boolean>(false);
+  const [isBridgesModalOpen, setIsBridgesModalOpen] = useState<boolean>(false);
   const [serverPingState, setServerPingState] = useState<{ isReachable: boolean; latencyMs: number } | null>(null);
 
   const checkServerStatus = () => {
@@ -171,13 +154,13 @@ export const CentralCallOrb: React.FC<CentralCallOrbProps> = ({
     return () => cancelAnimationFrame(animId);
   }, [callStatus, micEnergy, outputEnergy]);
 
-  // Safety Abort Controller Timeout: 5 seconds in THINKING state
+  // Safety Abort Controller Timeout: 3.2 seconds max in THINKING state
   useEffect(() => {
     if (callStatus !== 'THINKING') return;
 
     const safetyAbortTimer = setTimeout(() => {
       audioEngine.resetToListening();
-    }, 5000);
+    }, 3200);
 
     return () => clearTimeout(safetyAbortTimer);
   }, [callStatus]);
@@ -191,9 +174,9 @@ export const CentralCallOrb: React.FC<CentralCallOrbProps> = ({
       setLinkingNotice(`جاري فحص واستخراج محتويات الملف: ${file.name}...`);
       const bound = await KernelBridge.bindKernelFile(file);
       onBindKernel(bound);
-      const msg = `تم ربط وتحديث النواة "${bound.name}" بنجاح (${bound.rules.length} قواعد). النواة جاهزة لتنفيذ كافة الأوامر.`;
+      const msg = `تم ربط وتحديث النواة "${bound.name}" بنجاح (${bound.rules.length} قواعد). النواة جاهزة للحديث معك.`;
       setLinkingNotice(msg);
-      audioEngine.speak(`تم ربط النواة ${bound.name} بنجاح. أنا جاهز لتنفيذ أوامرك.`);
+      audioEngine.speak(`تم ربط النواة ${bound.name} بنجاح. أنا جاهز للحديث وتنفيذ طلباتك.`);
       setTimeout(() => setLinkingNotice(null), 5000);
     } catch (err: any) {
       setLinkingNotice(`فشل ربط النواة: ${err.message || 'الملف غير صالح'}`);
@@ -206,7 +189,6 @@ export const CentralCallOrb: React.FC<CentralCallOrbProps> = ({
     setPermissionError(null);
     try {
       if (!boundKernel || !boundKernel.isActive) {
-        // Open file picker directly to bind the kernel
         fileInputRef.current?.click();
         return;
       }
@@ -214,7 +196,6 @@ export const CentralCallOrb: React.FC<CentralCallOrbProps> = ({
       if (callStatus === 'IDLE') {
         await audioEngine.safeStartMicrophone();
       } else if (callStatus === 'SPEAKING' || callStatus === 'BARGE_IN') {
-        // Instant Barge-In Interruption on user click/tap
         audioEngine.interruptSpeech();
       } else if (callStatus === 'LISTENING') {
         await audioEngine.commitCurrentUtterance();
@@ -239,19 +220,13 @@ export const CentralCallOrb: React.FC<CentralCallOrbProps> = ({
     setChatInput('');
   };
 
-  const handleDownloadDeliverableImage = (item: KernelDeliverable) => {
-    if (!item.imageUrl) return;
+  const handleDownloadImage = (url: string) => {
     const a = document.createElement('a');
-    a.href = item.imageUrl;
-    a.download = item.downloadFileName || 'kernel_image.png';
+    a.href = url;
+    a.download = `kernel_image_${Date.now()}.${url.includes('svg') ? 'svg' : 'png'}`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
-  };
-
-  const handleDownloadDeliverableZip = (item: KernelDeliverable) => {
-    if (!item.appZipBlob) return;
-    triggerFileDownload(item.appZipBlob, item.downloadFileName || `${item.appName || 'app'}_package.zip`);
   };
 
   const handleCopyText = (id: string, text: string) => {
@@ -305,6 +280,16 @@ export const CentralCallOrb: React.FC<CentralCallOrbProps> = ({
             </button>
           )}
 
+          {/* Multi-Bridge Inspector Action */}
+          <button
+            onClick={() => setIsBridgesModalOpen(true)}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-xs font-mono bg-cyan-950/50 border border-cyan-500/50 text-cyan-300 hover:bg-cyan-900/50 transition-all cursor-pointer shadow-sm"
+            title="فحص جسور الربط المتوازية مع النواة"
+          >
+            <Share2 className="w-3.5 h-3.5 text-cyan-400" />
+            <span>جسور النواة (5)</span>
+          </button>
+
           <button
             onClick={() => setIsServerModalOpen(true)}
             className={`flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-xs font-mono border transition-all cursor-pointer ${
@@ -346,7 +331,7 @@ export const CentralCallOrb: React.FC<CentralCallOrbProps> = ({
                 : callStatus === 'SPEAKING'
                 ? 'صوت النواة يتحدث'
                 : callStatus === 'THINKING'
-                ? 'النواة تعالج...'
+                ? 'النواة تجيب...'
                 : 'النواة جاهزة'}
             </span>
           </div>
@@ -365,10 +350,10 @@ export const CentralCallOrb: React.FC<CentralCallOrbProps> = ({
         <div className="w-full my-3 p-4 bg-gradient-to-r from-amber-950/80 via-slate-900 to-amber-950/80 border border-amber-500/50 rounded-2xl flex flex-col items-center text-center shadow-xl z-20 animate-in fade-in duration-300">
           <div className="flex items-center gap-2 text-amber-300 font-bold text-sm mb-1">
             <AlertTriangle className="w-4 h-4 text-amber-400" />
-            <span>التطبيق جسر مباشر يتطلب ربط النواة (ZIP) لتنفيذ الأوامر</span>
+            <span>التطبيق جسر مباشر يتطلب ربط النواة (ZIP) للتحدث والدردشة</span>
           </div>
           <p className="text-xs text-slate-300 mb-3 max-w-lg leading-relaxed">
-            اضغط على الزر أدناه لاختيار ملف النواة أو العقل الذكي (Smart ZIP) من هاتفك، وسيتم استخراج قواعده وتعليماته وحفظه ليعمل التطبيق بدون أي مشاكل حتى بعد تحديثه.
+            اضغط على الزر أدناه لاختيار ملف النواة من هاتفك، وسيتم وصل الجسور مباشرة لتتحدث وتدردش معها بكل بساطة.
           </p>
           <button
             onClick={() => fileInputRef.current?.click()}
@@ -438,7 +423,7 @@ export const CentralCallOrb: React.FC<CentralCallOrbProps> = ({
               )}
               {callStatus === 'STARTING' && <span className="text-yellow-400">تشغيل المايك...</span>}
               {callStatus === 'LISTENING' && <span className="text-cyan-300">النواة تستمع إليك</span>}
-              {callStatus === 'THINKING' && <span className="text-amber-300 animate-pulse">النواة تعالج الأمر...</span>}
+              {callStatus === 'THINKING' && <span className="text-amber-300 animate-pulse">النواة تجيب...</span>}
               {callStatus === 'SPEAKING' && <span className="text-purple-300">صوت النواة يتحدث...</span>}
               {callStatus === 'BARGE_IN' && <span className="text-rose-400">مقاطعة الصوت!</span>}
               {callStatus === 'STOPPING' && <span className="text-yellow-400">إيقاف المايك...</span>}
@@ -477,17 +462,14 @@ export const CentralCallOrb: React.FC<CentralCallOrbProps> = ({
             </button>
           </div>
         )}
-
       </div>
 
       {/* Pure Single-Exchange Chat: Only Active Question and Answer Are Shown */}
       {(() => {
-        const activeDeliverable = deliverables.length > 0 ? deliverables[0] : null;
         const activeUserQuestion = userQuestion || currentTranscript;
         const isWaitingForAnswer =
-          isExecutingDeliverable ||
           callStatus === 'THINKING' ||
-          (Boolean(activeUserQuestion) && !lastAssistantResponse && !activeDeliverable);
+          (Boolean(activeUserQuestion) && !lastAssistantResponse && !imageUrl);
 
         if (activeUserQuestion) {
           return (
@@ -516,11 +498,11 @@ export const CentralCallOrb: React.FC<CentralCallOrbProps> = ({
                 <div className="px-4 py-3 bg-slate-900/90 rounded-2xl border border-amber-500/40 shadow-md text-right flex items-center justify-between gap-3 animate-pulse">
                   <RefreshCw className="w-4 h-4 text-amber-400 animate-spin shrink-0" />
                   <div className="text-right">
-                    <p className="text-xs font-bold text-amber-300">النواة تعالج الأمر وتستحضر الجواب...</p>
-                    <p className="text-[11px] text-slate-400">جاري صياغة الرد وتنفيذ المطلوب عبر النواة</p>
+                    <p className="text-xs font-bold text-amber-300">النواة تجيب عبر جسور الاتصال...</p>
+                    <p className="text-[11px] text-slate-400">جاري نقل إجابة النواة مباشرة إليك</p>
                   </div>
                 </div>
-              ) : (lastAssistantResponse || activeDeliverable) ? (
+              ) : (lastAssistantResponse || imageUrl) ? (
                 <div className="px-4 py-3.5 bg-gradient-to-r from-slate-950 via-slate-900 to-slate-950 rounded-2xl border border-purple-500/40 shadow-xl text-right space-y-3 animate-in fade-in duration-300">
                   <div className="flex items-center justify-between pb-2 border-b border-slate-800/80">
                     <div className="flex items-center gap-2">
@@ -531,7 +513,7 @@ export const CentralCallOrb: React.FC<CentralCallOrbProps> = ({
                         </span>
                       )}
                       <button
-                        onClick={() => handleCopyText('current_ans', lastAssistantResponse || activeDeliverable?.content || '')}
+                        onClick={() => handleCopyText('current_ans', lastAssistantResponse || '')}
                         className="text-[11px] text-slate-400 hover:text-white flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-900 border border-slate-800 cursor-pointer"
                       >
                         {copiedId === 'current_ans' ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
@@ -554,50 +536,23 @@ export const CentralCallOrb: React.FC<CentralCallOrbProps> = ({
                     </p>
                   )}
 
-                  {/* Attached Image Deliverable */}
-                  {activeDeliverable?.type === 'GENERATED_IMAGE' && activeDeliverable.imageUrl && (
+                  {/* Attached Image if generated by Kernel */}
+                  {imageUrl && (
                     <div className="space-y-2 pt-1">
                       <div className="relative rounded-xl overflow-hidden border border-slate-800 bg-slate-950 flex items-center justify-center max-h-64">
                         <img
-                          src={activeDeliverable.imageUrl}
-                          alt={activeDeliverable.userPrompt}
+                          src={imageUrl}
+                          alt="Kernel Output"
                           className="max-h-64 w-auto object-contain rounded-xl"
                         />
                       </div>
                       <div className="flex justify-end">
                         <button
-                          onClick={() => handleDownloadDeliverableImage(activeDeliverable)}
+                          onClick={() => handleDownloadImage(imageUrl)}
                           className="px-4 py-2 bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 text-slate-950 font-bold text-xs rounded-xl flex items-center gap-1.5 transition-all shadow-md active:scale-95 cursor-pointer"
                         >
                           <Download className="w-4 h-4" />
-                          <span>تحميل الصورة إلى هاتفك</span>
-                        </button>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Attached App ZIP Deliverable */}
-                  {activeDeliverable?.type === 'BUILT_APP_PACKAGE' && (
-                    <div className="space-y-2 pt-1">
-                      {activeDeliverable.codeSnippet && (
-                        <div className="p-3 bg-slate-950 rounded-xl border border-slate-800/80 font-mono text-[11px] text-cyan-200 overflow-x-auto max-h-28">
-                          <pre className="whitespace-pre-wrap">{activeDeliverable.codeSnippet.slice(0, 350)}...</pre>
-                        </div>
-                      )}
-                      <div className="flex items-center justify-between gap-2 pt-1 flex-wrap">
-                        <span className="text-xs text-slate-400 flex items-center gap-1">
-                          {activeDeliverable.platform === 'android' ? (
-                            <span className="text-emerald-400 flex items-center gap-1"><Smartphone className="w-3.5 h-3.5" /> Android APK / ZIP</span>
-                          ) : (
-                            <span className="text-cyan-400 flex items-center gap-1"><Apple className="w-3.5 h-3.5" /> iOS Swift ZIP</span>
-                          )}
-                        </span>
-                        <button
-                          onClick={() => handleDownloadDeliverableZip(activeDeliverable)}
-                          className="px-4 py-2 bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 text-slate-950 font-bold text-xs rounded-xl flex items-center gap-1.5 transition-all shadow-md active:scale-95 cursor-pointer"
-                        >
-                          <Download className="w-4 h-4" />
-                          <span>تحميل ملف ZIP للتطبيق كاملًا ({activeDeliverable.downloadFileName})</span>
+                          <span>تحميل الصورة</span>
                         </button>
                       </div>
                     </div>
@@ -610,86 +565,11 @@ export const CentralCallOrb: React.FC<CentralCallOrbProps> = ({
 
         return (
           <div className="w-full max-w-md my-2 py-2.5 px-4 rounded-2xl bg-slate-900/40 border border-slate-800/60 text-center text-xs text-slate-400 flex items-center justify-center gap-2 z-20">
-            <Sparkles className="w-3.5 h-3.5 text-cyan-400/70" />
-            <span>أرسل سؤالك أو أمرك للنواة، وسيظهر فقط سؤالي وجواب النواة هنا</span>
+            <Share2 className="w-3.5 h-3.5 text-cyan-400" />
+            <span>تحدث أو اكتب ما تريد — جسور النواة تنقل صوتك وأسئلتك للنواة مباشرة</span>
           </div>
         );
       })()}
-
-      {/* Diagnostic Breakdown Card (Shows when command cannot be executed) */}
-      {activeDiagnostic && activeDiagnostic.hasDefect && (
-        <div className="w-full p-4 rounded-2xl border transition-all text-right shadow-2xl animate-in fade-in zoom-in-95 duration-200 bg-slate-900/95 border-amber-500/50 z-20 my-2">
-          <div className="flex items-center justify-between pb-2 border-b border-slate-800 mb-2.5">
-            <div className="flex items-center gap-2">
-              <span
-                className={`px-2.5 py-0.5 rounded-full text-[11px] font-bold font-mono ${
-                  activeDiagnostic.origin === 'KERNEL'
-                    ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40'
-                    : 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
-                }`}
-              >
-                {activeDiagnostic.origin === 'KERNEL' ? '🧠 الخلل في النواة (Kernel)' : '⚙️ الخلل في المحرك (Engine)'}
-              </span>
-              <span className="text-xs font-bold text-white">{activeDiagnostic.title}</span>
-            </div>
-            {onClearDiagnostic && (
-              <button
-                onClick={onClearDiagnostic}
-                className="text-slate-400 hover:text-white p-1 rounded-lg cursor-pointer"
-                title="إغلاق التقرير"
-              >
-                <X className="w-3.5 h-3.5" />
-              </button>
-            )}
-          </div>
-
-          {activeDiagnostic.commandRequested && (
-            <p className="text-[11px] text-slate-400 mb-2">
-              الأمر المطلوب: <span className="text-cyan-300 font-mono">"{activeDiagnostic.commandRequested}"</span>
-            </p>
-          )}
-
-          <div className="space-y-2 text-xs">
-            <div className="p-2.5 rounded-xl bg-slate-950/70 border border-slate-800">
-              <div className="text-[11px] font-bold text-amber-400 mb-0.5 flex items-center gap-1.5">
-                <AlertTriangle className="w-3.5 h-3.5 text-amber-400" />
-                <span>سبب الخلل وعدم القدرة على التنفيذ:</span>
-              </div>
-              <p className="text-slate-200 leading-relaxed text-[11px]">{activeDiagnostic.cause}</p>
-            </div>
-
-            <div className="p-2.5 rounded-xl bg-cyan-950/30 border border-cyan-500/30">
-              <div className="text-[11px] font-bold text-cyan-300 mb-0.5 flex items-center gap-1.5">
-                <Wrench className="w-3.5 h-3.5 text-cyan-400" />
-                <span>الحل والإجراء المطلوب:</span>
-              </div>
-              <p className="text-slate-200 leading-relaxed text-[11px]">{activeDiagnostic.suggestedAction}</p>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2 mt-3 pt-2 border-t border-slate-800/80">
-            {activeDiagnostic.defectType === 'KERNEL_KNOWLEDGE_MISSING' && onOpenWorkspace && (
-              <button
-                onClick={() => onOpenWorkspace('kernel_trainer')}
-                className="flex-1 py-2 px-3 bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-xs rounded-xl transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-md"
-              >
-                <Sparkles className="w-3.5 h-3.5" />
-                <span>تعليم وتدريب النواة الآن (Teach Kernel)</span>
-              </button>
-            )}
-
-            {activeDiagnostic.defectType === 'KERNEL_LIBRARY_REQUIRED' && onOpenWorkspace && (
-              <button
-                onClick={() => onOpenWorkspace('kernel_trainer')}
-                className="flex-1 py-2 px-3 bg-purple-500 hover:bg-purple-400 text-white font-bold text-xs rounded-xl transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-md"
-              >
-                <BookOpen className="w-3.5 h-3.5" />
-                <span>إرفاق مكتبة للنواة (Attach Library)</span>
-              </button>
-            )}
-          </div>
-        </div>
-      )}
 
       {/* Permission Notice */}
       {permissionError && (
@@ -710,9 +590,9 @@ export const CentralCallOrb: React.FC<CentralCallOrbProps> = ({
                   ? 'bg-cyan-500 text-slate-950 shadow-md'
                   : 'text-slate-400 hover:text-white'
               }`}
-              title="مهلة 1100ms - تمنع انقطاع الصوت تماماً أثناء التحدث والتردد"
+              title="مهلة 650ms"
             >
-              مانع التقطيع (1100ms)
+              طبيعية (650ms)
             </button>
             <button
               onClick={() => handleSensitivityChange('NORMAL')}
@@ -721,9 +601,9 @@ export const CentralCallOrb: React.FC<CentralCallOrbProps> = ({
                   ? 'bg-cyan-500 text-slate-950 shadow-md'
                   : 'text-slate-400 hover:text-white'
               }`}
-              title="مهلة 850ms - متوازنة وطبيعية"
+              title="مهلة 500ms متوازنة وسريعة"
             >
-              متوازنة (850ms)
+              متوازنة (500ms)
             </button>
             <button
               onClick={() => handleSensitivityChange('NOISE_ISOLATION')}
@@ -732,7 +612,7 @@ export const CentralCallOrb: React.FC<CentralCallOrbProps> = ({
                   ? 'bg-cyan-500 text-slate-950 shadow-md'
                   : 'text-slate-400 hover:text-white'
               }`}
-              title="مهلة 600ms - استجابة سريعة"
+              title="استجابة فائقة السرعة"
             >
               سريعة
             </button>
@@ -740,12 +620,12 @@ export const CentralCallOrb: React.FC<CentralCallOrbProps> = ({
 
           <div className="flex items-center gap-1 text-[10px] text-emerald-400 font-mono pr-2">
             <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
-            <span>مانع التقطيع نشط</span>
+            <span>جسور النواة نشطة</span>
           </div>
         </div>
       </div>
 
-      {/* Bottom Area: Clean Dialogue Box for Chat & Commands */}
+      {/* Bottom Area: Clean Dialogue Box for Chat & Questions */}
       <footer className="w-full max-w-lg z-20 pb-2">
         <form
           onSubmit={handleSendChat}
@@ -755,7 +635,7 @@ export const CentralCallOrb: React.FC<CentralCallOrbProps> = ({
             type="text"
             value={chatInput}
             onChange={(e) => setChatInput(e.target.value)}
-            placeholder="اكتب أمرك للنواة (مثلاً: صمم صورة مزرعة، ابني تطبيق أندرويد)..."
+            placeholder="اكتب رسالتك أو سؤالك للنواة (التطبيق جسر مباشر ينقلها فوراً)..."
             className="flex-1 bg-transparent px-3.5 py-2 text-xs text-white placeholder:text-slate-500 focus:outline-none text-right font-sans"
           />
 
@@ -763,7 +643,7 @@ export const CentralCallOrb: React.FC<CentralCallOrbProps> = ({
             type="submit"
             disabled={!chatInput.trim()}
             className="p-2.5 bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-400 hover:to-blue-500 text-slate-950 font-bold rounded-xl transition-all cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed shadow-md"
-            title="إرسال الأمر للنواة"
+            title="إرسال للنواة"
           >
             <Send className="w-4 h-4" />
           </button>
@@ -775,6 +655,13 @@ export const CentralCallOrb: React.FC<CentralCallOrbProps> = ({
         isOpen={isServerModalOpen}
         onClose={() => setIsServerModalOpen(false)}
         onConnectionChange={checkServerStatus}
+      />
+
+      {/* Multi-Bridge Telemetry & Inspector Modal */}
+      <BridgesInspectorModal
+        isOpen={isBridgesModalOpen}
+        onClose={() => setIsBridgesModalOpen(false)}
+        boundKernel={boundKernel}
       />
     </div>
   );

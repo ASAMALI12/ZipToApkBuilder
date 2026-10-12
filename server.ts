@@ -4,7 +4,7 @@ import path from 'path';
 import http from 'http';
 import { fileURLToPath } from 'url';
 import { WebSocketServer, WebSocket } from 'ws';
-import { GoogleGenAI, Type, ThinkingLevel } from '@google/genai';
+import { GoogleGenAI, Type } from '@google/genai';
 
 dotenv.config();
 
@@ -27,10 +27,11 @@ app.use((req, res, next) => {
   next();
 });
 
+// High-capacity bridges support up to 50MB for kernel matrices and rules
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// Shared Gemini client with required User-Agent
+// Shared Gemini client
 const apiKey = process.env.GEMINI_API_KEY || '';
 const ai = new GoogleGenAI({
   apiKey,
@@ -45,169 +46,69 @@ const ai = new GoogleGenAI({
 app.get('/api/health', (req, res) => {
   res.json({
     status: 'ok',
-    kernelVersion: '3.4.0-quantum',
+    kernelBridge: '5.0.0-pure-bridge',
     hasApiKey: Boolean(apiKey && apiKey !== 'MY_GEMINI_API_KEY'),
     timestamp: new Date().toISOString(),
   });
 });
 
-// Dialectal Heuristic Resolver (Arabic & English intent mapping)
-function resolveDialectalIntent(cleanText: string, utterance: string) {
-  let detectedIntent = 'INTENT_GENERAL_QUERY';
-  let uiAction = 'ROUTE_PREDEFINED';
+// In-memory Kernel State & Context Cache
+interface ServerKernelContext {
+  summaryContext: string;
+  rules: string[];
+  instructions: string[];
+  updatedAt: string;
+}
 
-  // Check learned knowledge from memory if available (safely sanitizing any binary artifacts)
-  const rawLearned = globalInMemoryKernelContext?.summaryContext || '';
-  const cleanLearned = rawLearned.replace(/[\x00-\x1F\x7F-\x9F\uFFF0-\uFFFF]/g, '').trim();
-  const safeLearned = cleanLearned && cleanLearned.length > 5 && !cleanLearned.includes('\u0000') ? cleanLearned.slice(0, 100) : '';
+let globalInMemoryKernelContext: ServerKernelContext | null = {
+  summaryContext: 'نواة الذكاء الذاتية المستقلة - المحرك المعرفي الشامل للتواصل المباشر مع المستخدم.',
+  rules: [
+    'الاستماع والتفاعل الصوتي والكتابي المباشر مع المستخدم من خلال النواة',
+    'تقديم إجابات ذكية ودقيقة وشاملة بناءً على ما تحتويه النواة من معلومات وقواعد',
+    'عدم إغلاق الميكروفون إلا بطلب صريح ومؤكد من المستخدم',
+  ],
+  instructions: [
+    'أنت النواة الذكية القوية التي تدير المعرفة والذكاء، والتطبيق مجرد جسر نقي بينك وبين المستخدم.',
+    'أجب دائماً بصوت النواة وبحكمة ووضوح.',
+  ],
+  updatedAt: new Date().toISOString(),
+};
 
-  let responseText = safeLearned
-    ? `أهلاً بك يا صديقي! أنا أستمع إليك وجاهز بالتعليمات المحفوظة: ${safeLearned}... تفضل بسؤالك أو أمرك.`
-    : `أهلاً بك يا صديقي! أنا أستمع إليك وجاهز للإجابة وتنفيذ أي أمر بكل سرور.`;
-  let spokenText = safeLearned
-    ? `أنا أستمع إليك وجاهز بالتعليمات المحفوظة.`
-    : `أهلاً بك، أنا أستمع إليك وجاهز لمساعدتك.`;
+const sessionKernelContexts = new WeakMap<WebSocket, ServerKernelContext>();
 
-  let customPrompt = '';
-  let customAppType = '';
-  let commandDiagnostic: any = undefined;
+// Dialectal Speech Control Resolver (Microphone mute & speech interrupt)
+function resolveLocalControl(cleanText: string, utterance: string) {
+  const norm = cleanText.trim().toLowerCase();
 
-  if (/(?:وورك\s*(?:فلو|قلو|كلو|فلوه)|workflow|سير\s*(?:ال)?عمل|افتح\s+(?:صفحة|قسم)\s+(?:بناء\s+)?(?:ال)?تطبيقات?|ابني\s+(?:لي\s+)?تطبيق|بناء\s+تطبيق|طور\s+تطبيق|أريد\s+بناء\s+تطبيق|لنبني\s+تطبيق|لنقوم\s+(?:ب)?بناء|اضف\s+(?:لي\s+)?ملف|build\s+app|create\s+app)/i.test(cleanText)) {
-    detectedIntent = 'INTENT_BUILD_APP';
-    uiAction = 'ROUTE_PREDEFINED';
-    const isWorkflow = /(?:وورك|قلو|فلو|سير\s*(?:ال)?عمل|workflow)/i.test(cleanText);
-    if (isWorkflow) {
-      customAppType = 'workflow';
-      responseText = 'تمت إضافة وتجهيز ملف سير العمل (Workflow) بنجاح في (.github/workflows/workflow.yml و build-app.yml) لأتمتة بناء وتصدير التطبيق لكافة المنصات.';
-      spokenText = 'تمت إضافة وتجهيز ملف الوورك فلو لبناء التطبيق.';
-    } else {
-      const appM = utterance.match(/(?:بناء|ابني|طور|برمج|لنبني|اريد بناء)\s+(?:لي\s+)?(?:تطبيق|برنامج)?\s*(.*)/i);
-      if (appM && appM[1] && appM[1].trim()) {
-        customAppType = appM[1].trim();
-      }
-      responseText = customAppType
-        ? `فتحت لك صفحة بناء التطبيقات لتطوير "${customAppType}" لأجهزة أندرويد وآيفون.`
-        : 'فتحت لك صفحة بناء وتطوير تطبيقات أندرويد وآيفون.';
-      spokenText = customAppType ? `تم فتح صفحة بناء تطبيق ${customAppType}.` : 'تم فتح صفحة بناء التطبيقات.';
-    }
-  } else if (/(?:افتح\s+(?:صفحة|استوديو|قسم)\s+(?:ال)?صور|توليد\s+(?:ال)?صور(?:ة|ه)?|انشئ\s+(?:لي\s+)?صور(?:ة|ه)?|صمم\s+(?:لي\s+)?صور(?:ة|ه)?|ارسم\s+(?:لي\s+)?صور(?:ة|ه)?|generate\s+image)/i.test(cleanText)) {
-    detectedIntent = 'INTENT_GENERATE_IMAGE';
-    uiAction = 'ROUTE_PREDEFINED';
-    const imgM = utterance.match(/(?:انشئ|صمم|توليد|ارسم|صور(?:ة|ه)?)\s+(?:لي\s+)?(?:صور(?:ة|ه)?\s+)?(?:عن\s+|لـ\s+)?(.+)/i);
-    if (imgM && imgM[1] && imgM[1].trim()) {
-      customPrompt = imgM[1].trim();
-    } else if (cleanText.includes('مزرع')) {
-      customPrompt = 'مزرعة ريفية خضراء جميلة';
-    } else if (cleanText.includes('كلب')) {
-      customPrompt = 'كلب أليف لطيف بتفاصيل واضحة';
-    }
-    responseText = customPrompt
-      ? `تم فتح استوديو الصور وجاري توليد صورة "${customPrompt}" عبر النواة.`
-      : 'تم فتح استوديو توليد وتصميم الصور الذكية.';
-    spokenText = customPrompt
-      ? `جاري توليد صورة ${customPrompt}.`
-      : 'تم فتح صفحة توليد الصور.';
-  } else if (/(?:افتح\s+(?:صفحة|استوديو)\s+(?:ال)?(?:العاب|ألعاب|لعبة|لعبه)|اصنع\s+لعب[ةه]|انشاء\s+لعب[ةه]|سوي\s+لعب[ةه]|create\s+game)/i.test(cleanText)) {
-    detectedIntent = 'INTENT_CREATE_GAME';
-    uiAction = 'ROUTE_PREDEFINED';
-    responseText = 'تم فتح استوديو بناء وبرمجة الألعاب التفاعلية.';
-    spokenText = 'تم فتح صفحة إنشاء الألعاب.';
-  } else if (/(?:افتح\s+(?:صفحة|استوديو)\s+(?:ال)?(?:فيديو|فديو|وسائط)|انشاء\s+فديو|انشاء\s+فيديو|استوديو\s+فيديو)/i.test(cleanText)) {
-    detectedIntent = 'INTENT_CREATE_MEDIA';
-    uiAction = 'ROUTE_PREDEFINED';
-    responseText = 'تم فتح استوديو إنتاج وتوليد الفيديو والأصوات.';
-    spokenText = 'تم فتح صفحة الفيديو والصوت.';
-  } else if (/(?:افتح\s+(?:صفحة\s+)?(?:جيت\s*هب|كيت\s*هب)|ربط\s+(?:جيت\s*هب|كيت\s*هب)|اربط\s+(?:جيت\s*هب|كيت\s*هب)|github)/i.test(cleanText)) {
-    detectedIntent = 'INTENT_CONNECT_GITHUB';
-    uiAction = 'ROUTE_PREDEFINED';
-    responseText = 'تم فتح واجهة الربط مع منصة جيت هب (GitHub).';
-    spokenText = 'تم فتح صفحة جيت هب.';
-  } else if (/(?:افتح\s+(?:صفحة\s+)?سوبابيس|ربط\s+سوبابيس|اربط\s+سوبابيس|supabase)/i.test(cleanText)) {
-    detectedIntent = 'INTENT_CONNECT_SUPABASE';
-    uiAction = 'ROUTE_PREDEFINED';
-    responseText = 'تم فتح واجهة الربط مع سوبابيس وقواعد البيانات.';
-    spokenText = 'تم فتح صفحة سوبابيس.';
-  } else if (/(?:نربط\s+(?:ال)?نوات?|اربط\s+(?:ال)?نوات?|ربط\s+(?:ال)?نوات?|حمل\s+(?:ال)?نوات?|تحميل\s+(?:ال)?نوات?|اختر\s+(?:ملف\s+)?(?:ال)?نوات?|link\s+kernel)/i.test(cleanText)) {
-    detectedIntent = 'INTENT_LINK_KERNEL';
-    uiAction = 'ROUTE_PREDEFINED';
-    responseText = 'جاري فتح ملفات الهاتف لاختيار النواة وربطها بالمحرك مباشرة.';
-    spokenText = 'جاري فتح نافذة اختيار النواة.';
-  } else if (/(?:لنعلم\s+(?:ال)?نوات?|تعليم\s+(?:ال)?نوات?|تدريب\s+(?:ال)?نوات?|علم\s+(?:ال)?نوات?|ندرب\s+(?:ال)?نوات?|صفحة\s+تعليم|افتح\s+تعليم|محادثة\s+البرمجة|teach\s+kernel)/i.test(cleanText)) {
-    detectedIntent = 'INTENT_TEACH_KERNEL';
-    uiAction = 'ROUTE_PREDEFINED';
-    responseText = 'تم فتح صفحة تعليم وتدريب النواة.';
-    spokenText = 'تم فتح صفحة تعليم النواة.';
-  } else if (/(?:نفذ\s+(?:لي\s+)?(?:هذا\s+)?(?:ال)?أ?مر|تنفيذ\s+(?:ال)?أ?مر|قم\s+بتنفيذ|طبق\s+(?:ال)?أ?مر|ابدأ\s+(?:ال)?تنفيذ|نفذ|execute)/i.test(cleanText)) {
-    detectedIntent = 'INTENT_EXECUTE_COMMAND';
-    uiAction = 'EXECUTE_SYSTEM_ACTION';
-    responseText = 'أمرك قيد التنفيذ فوراً، النواة تباشر العمل وتستمر بالاستماع إليك دون أي انقطاع.';
-    spokenText = 'أمرك قيد التنفيذ، النواة تباشر العمل.';
-  } else if (/^(?:ارجع|العود[ةه]|رجوع|الصفح[ةه]\s+السابق[ةه]|الرئيسي[ةه]|go\s+back|back)$/i.test(cleanText.trim())) {
-    detectedIntent = 'INTENT_NAVIGATE_BACK';
-    uiAction = 'ROUTE_PREDEFINED';
-    responseText = 'تمت العودة إلى الشاشة الرئيسية.';
-    spokenText = 'تمت العودة إلى الشاشة الرئيسية.';
-  } else if (/^(?:اسكت|اصمت|انكتم|اخرس|توقف\s+عن\s+الكلام|توقف\s+عن\s+التحدث|صمت|silent|shut\s+up|hush)$/i.test(cleanText.trim())) {
-    detectedIntent = 'INTENT_INTERRUPT_SPEECH';
-    uiAction = 'EXECUTE_SYSTEM_ACTION';
-    responseText = 'أنا صامت ومستمع لأوامرك.';
-    spokenText = '';
-  } else if (/^(?:إغلاق\s+الميكروفون|اغلاق\s+الميكروفون|اغلق\s+المايك|إغلاق\s+المايك|انهاء\s+المكالمة|إنهاء\s+المكالمة|stop\s+mic|close\s+mic)$/i.test(cleanText.trim())) {
-    detectedIntent = 'INTENT_CLOSE_MIC';
-    uiAction = 'EXECUTE_SYSTEM_ACTION';
-    responseText = 'تم إيقاف الميكروفون.';
-    spokenText = '';
-  } else if (/(?:حجز|طيران|فندق|سفر|مكيف|سيار[ةه] حقيقي[ةه]|اطبخ|اكل|شراء حقيقي|تحكم بالبيت|غسيل|كهرباء|شاحن)/i.test(cleanText)) {
-    // Defect in Engine: Physical World Action unsupported
-    commandDiagnostic = {
-      hasDefect: true,
-      origin: 'ENGINE',
-      defectType: 'ENGINE_UNSUPPORTED',
-      title: 'المشكلة في المحرك (Engine Limitation)',
-      cause: 'محرك التطبيق لا يدعم التحكم في الأجهزة الواقعية أو الحجوزات الخارجية مباشرة.',
-      suggestedAction: 'المحرك محصور في تطوير البرمجيات وتوليد الوسائط. لا يمكن تدريب النواة على وظائف فيزيائية.',
-      commandRequested: utterance,
+  if (/^(?:اسكت|اصمت|انكتم|اخرس|توقف\s+عن\s+الكلام|توقف\s+عن\s+التحدث|صمت|silent|shut\s+up|hush)$/i.test(norm)) {
+    return {
+      intent: 'INTENT_INTERRUPT_SPEECH',
+      confidence: 1.0,
+      parameters: { raw_utterance: utterance },
+      ui_action: 'EXECUTE_SYSTEM_ACTION',
+      assistant_response: 'أنا صامت ومستمع لأوامرك.',
+      voice_spoken_text: '',
     };
-    responseText = `[تشخيص المحرك]: تعذر تنفيذ هذا الأمر لأن الخلل في المحرك، حيث لا يدعم التحكم في الأجهزة الفيزيائية أو الخدمات الخارجية.`;
-    spokenText = 'تعذر التنفيذ: الخلل في المحرك، لا يدعم هذا الإجراء.';
-  } else if (/(?:معادلات تفاضلي[ةه]|فيزياء ثلاثي[ةه]|ذكاء بصري محلي|opencv|cad|dwg|بلوتوث|nfc)/i.test(cleanText)) {
-    // Defect in Kernel: Needs Library
-    commandDiagnostic = {
-      hasDefect: true,
-      origin: 'KERNEL',
-      defectType: 'KERNEL_LIBRARY_REQUIRED',
-      title: 'المشكلة في النواة: تفتقر لمكتبة ملحقة (Library Required)',
-      cause: 'يتطلب تنفيذ هذا الأمر إرفاق مكتبة برمجية متخصصة (Attached Library) لدعم هذه الحسابات.',
-      suggestedAction: 'يجب إرفاق مكتبة ملحقة للنواة من صفحة تدريب وتعليم النواة.',
-      recommendedRoute: 'kernel_trainer',
-      commandRequested: utterance,
-    };
-    responseText = `[تشخيص النواة]: تعذر تنفيذ الأمر لأن الخلل في النواة: تفتقر لمكتبة ملحقة مساعدة. يرجى إرفاق المكتبة المناسبة للنواة.`;
-    spokenText = 'تعذر التنفيذ: الخلل في النواة، يلزم إرفاق مكتبة مساعدة.';
   }
 
-  return {
-    intent: detectedIntent,
-    confidence: 0.95,
-    parameters: {
-      target: detectedIntent,
-      raw_utterance: utterance,
-      prompt: customPrompt || undefined,
-      appType: customAppType || undefined,
-      diagnostic: commandDiagnostic,
-    },
-    ui_action: uiAction,
-    assistant_response: responseText,
-    voice_spoken_text: spokenText,
-    diagnostic: commandDiagnostic,
-  };
+  if (/^(?:إغلاق\s+الميكروفون|اغلاق\s+الميكروفون|اغلق\s+المايك|إغلاق\s+المايك|انهاء\s+المكالمة|إنهاء\s+المكالمة|stop\s+mic|close\s+mic)$/i.test(norm)) {
+    return {
+      intent: 'INTENT_CLOSE_MIC',
+      confidence: 1.0,
+      parameters: { raw_utterance: utterance },
+      ui_action: 'EXECUTE_SYSTEM_ACTION',
+      assistant_response: 'تم إيقاف الميكروفون.',
+      voice_spoken_text: '',
+    };
+  }
+
+  return null;
 }
 
 // Resilient Gemini model invoker for text tasks
 const exhaustedModels = new Map<string, number>();
 
 async function generateGeminiContentWithFallback(contents: any, config?: any) {
-  // Use approved models from gemini_api skill for text tasks (gemini-3.1-flash-lite prioritized for sub-300ms latency)
   const models = ['gemini-3.1-flash-lite', 'gemini-3.8-flash'];
   let lastError: any = null;
   const now = Date.now();
@@ -231,21 +132,7 @@ async function generateGeminiContentWithFallback(contents: any, config?: any) {
       });
     } catch (err: any) {
       lastError = err;
-      if (err.message?.includes('thinking') || err.message?.includes('Thinking') || err.status === 400) {
-        try {
-          const configWithoutThinking = { ...sanitizedConfig };
-          delete configWithoutThinking.thinkingConfig;
-          return await ai.models.generateContent({
-            model,
-            contents,
-            config: configWithoutThinking,
-          });
-        } catch (retryErr: any) {
-          lastError = retryErr;
-        }
-      }
       if (err.status === 429 || err.message?.includes('429') || err.message?.includes('RESOURCE_EXHAUSTED')) {
-        console.warn(`Model ${model} quota exhausted, falling back...`);
         exhaustedModels.set(model, now + 15 * 60 * 1000);
         continue;
       }
@@ -255,12 +142,8 @@ async function generateGeminiContentWithFallback(contents: any, config?: any) {
   throw lastError;
 }
 
-// Dedicated Audio Gemini invoker using models supporting audio input (optimized for low-latency voice)
+// Dedicated Audio Gemini invoker for voice transcription
 async function generateGeminiAudioContentWithFallback(contents: any, config?: any) {
-  // Available models supporting audio input per gemini_api skill:
-  // 1. gemini-3.5-transcribe (Fastest dedicated audio transcription model, ~350ms latency)
-  // 2. gemini-3.1-flash-lite (Cost-effective fast multimodal fallback)
-  // 3. gemini-3.8-flash (General Multimodal fallback)
   const audioModels = ['gemini-3.5-transcribe', 'gemini-3.1-flash-lite', 'gemini-3.8-flash'];
   let lastError: any = null;
   const now = Date.now();
@@ -276,149 +159,110 @@ async function generateGeminiAudioContentWithFallback(contents: any, config?: an
       delete sanitizedConfig.thinkingConfig;
     }
 
-    // gemini-3.5-transcribe is dedicated transcription and does not support JSON schema
     if (model.includes('transcribe')) {
       delete sanitizedConfig.responseMimeType;
       delete sanitizedConfig.responseSchema;
     }
 
     try {
-      const result = await ai.models.generateContent({
+      return await ai.models.generateContent({
         model,
         contents,
         config: sanitizedConfig,
       });
-
-      // Normalize response text across models (including gemini-3.5-transcribe which may return parts)
-      let resolvedText = result.text || '';
-      if (!resolvedText && result.candidates?.[0]?.content?.parts) {
-        resolvedText = result.candidates[0].content.parts
-          .map((p: any) => p.text || '')
-          .join('')
-          .trim();
-      }
-
-      return {
-        ...result,
-        text: resolvedText,
-      };
     } catch (err: any) {
       lastError = err;
       if (err.status === 429 || err.message?.includes('429') || err.message?.includes('RESOURCE_EXHAUSTED')) {
-        console.warn(`Audio model ${model} quota notice (429), trying next fallback...`);
         exhaustedModels.set(model, now + 15 * 60 * 1000);
         continue;
       }
-      if (err.status === 503 || err.message?.includes('503') || err.message?.includes('UNAVAILABLE')) {
-        console.warn(`Audio model ${model} temporarily unavailable (503), trying next fallback...`);
-        exhaustedModels.set(model, now + 2 * 60 * 1000);
-        continue;
-      }
-      if (err.status === 400 || err.message?.includes('INVALID_ARGUMENT') || err.message?.includes('JSON mode')) {
-        console.warn(`Audio model ${model} format adjustment:`, err.message);
-        continue;
-      }
-      console.warn(`Audio model ${model} error:`, err?.message || err);
+      throw err;
     }
   }
-  throw lastError || new Error('All audio transcription models failed');
+  throw lastError;
 }
 
-// Dual-Tier NLU & Intent Parser
+// Session Initialization endpoint: Caches extracted kernel context in-memory
+app.post('/api/kernel/session-init', (req, res) => {
+  const { summaryContext, rules = [], instructions = [], kernelName } = req.body;
+  globalInMemoryKernelContext = {
+    summaryContext: summaryContext || `النواة: ${kernelName || 'Kernel'} جاهزة للعمل.`,
+    rules: Array.isArray(rules) ? rules : [],
+    instructions: Array.isArray(instructions) ? instructions : [],
+    updatedAt: new Date().toISOString(),
+  };
+  return res.json({
+    status: 'initialized',
+    message: 'Kernel context synchronized in-memory',
+    context: globalInMemoryKernelContext,
+  });
+});
+
+// Primary Kernel Dialogue & NLU Endpoint:
+// Pure Bridge - transmits any question, chat, or request directly to the Kernel!
 app.post('/api/nlu/parse-intent', async (req, res) => {
-  const { utterance, conversationHistory = [], kernelContext } = req.body;
-  if (!utterance || typeof utterance !== 'string') {
-    return res.status(400).json({ error: 'Missing utterance' });
-  }
+  const { utterance = '', kernelContext } = req.body;
+  const cleanText = (utterance || '').trim();
 
-  // If client provided active kernel context, update in-memory cache
-  if (kernelContext) {
-    globalInMemoryKernelContext = {
-      summaryContext: kernelContext.summaryContext || (kernelContext.instructions ? kernelContext.instructions.join('\n') : `النواة: ${kernelContext.name || 'النشطة'}`),
-      rules: kernelContext.rules || [],
-      instructions: kernelContext.instructions || [],
-      updatedAt: new Date().toISOString(),
-    };
-  }
-
-  const cleanText = utterance.trim().toLowerCase();
-
-  // Tier 1: Fast-Path Local Matching (0ms instantaneous response for explicit commands)
-  const fastMatch = resolveDialectalIntent(cleanText, utterance);
-  if (fastMatch.intent !== 'INTENT_GENERAL_QUERY') {
-    return res.json(fastMatch);
-  }
-
-  // Enforce Kernel Requirement: The app must NOT operate without the kernel linked
-  const isKernelLinked = Boolean(
-    globalInMemoryKernelContext &&
-    (globalInMemoryKernelContext.summaryContext || globalInMemoryKernelContext.rules?.length > 0)
-  );
-
-  if (!isKernelLinked) {
+  if (!cleanText) {
     return res.json({
-      intent: 'INTENT_LINK_KERNEL',
+      intent: 'INTENT_GENERAL_QUERY',
       confidence: 1.0,
-      parameters: { target: 'kernel_linker', raw_utterance: utterance },
-      ui_action: 'ROUTE_PREDEFINED',
-      assistant_response: 'النواة غير مربوطة بعد. التطبيق يعتمد كلياً على النواة ولا يعمل إلا من خلالها. يرجى ربط ملف النواة لتفعيل النظام وبدء التحدث والعمل.',
-      voice_spoken_text: 'يرجى ربط ملف النواة أولاً لتفعيل النظام والتحدث من خلاله.',
+      parameters: { target: 'empty', raw_utterance: '' },
+      assistant_response: '',
+      voice_spoken_text: '',
     });
   }
 
-  // If no API key configured
-  if (!apiKey || apiKey === 'MY_GEMINI_API_KEY') {
-    return res.json(resolveDialectalIntent(cleanText, utterance));
+  // 1. Immediate local control check (mute / interrupt)
+  const localControl = resolveLocalControl(cleanText, utterance);
+  if (localControl) {
+    return res.json(localControl);
   }
 
-  // Tier 2: Contextual Dialectal LLM Classifier using Gemini
+  // 2. Transmit directly to the Kernel
   try {
-    const kernelRulesList = (globalInMemoryKernelContext?.rules || []).map((r: string) => `- ${r}`).join('\n');
-    const kernelInstructionsList = (globalInMemoryKernelContext?.instructions || []).map((i: string) => `- ${i}`).join('\n');
-    const kernelSummary = globalInMemoryKernelContext?.summaryContext || '';
+    const activeRules = kernelContext?.rules || globalInMemoryKernelContext?.rules || [];
+    const activeInstructions = kernelContext?.instructions || globalInMemoryKernelContext?.instructions || [];
+    const activeSummary = kernelContext?.summaryContext || globalInMemoryKernelContext?.summaryContext || '';
 
-    const prompt = `
-أنت النواة الذكية، صوت وعقل ومحرك النواة المستقلة.
-التطبيق يعتمد في كل شيء عليك ولا يعمل إلا من خلالك، والتحدث يتم حصرياً من خلال النواة.
+    const kernelRulesList = activeRules.map((r: string) => `- ${r}`).join('\n');
+    const kernelInstructionsList = activeInstructions.map((i: string) => `- ${i}`).join('\n');
+
+    const prompt = `أنت النواة الذكية القوية المستقلة.
+أنت من يمتلك العقل والمعرفة الكاملة، والتطبيق مجرد جسر نقي وشفيف بينك وبين المستخدم لنقل الصوت والكتابة.
+مهما كان ما يطلبه المستخدم (سؤال، محادثة، شرح، برمجة، فكرة، قصة، تحليل، رسم أو تصميم أو أي موضوع): أجب عليه مباشرة كعقل النواة بكل ذكاء وعمق ولباقة.
+لا تفتح أي ملفات خارجية ولا تدعِ وجود شاشات قديمة؛ أجب في "assistant_response" بإجابتك الكاملة والمفيدة بالعربية.
+
 قواعد النواة المحملة:
-${kernelRulesList || '- النواة الذاتية جاهزة لتنفيذ الأوامر.'}
-تعليمات النواة المحملة:
-${kernelInstructionsList || '- تقديم المساعدة والتحدث الصوتي من خلال النواة.'}
-سياق النواة المعرفي: "${kernelSummary}"
+${kernelRulesList || '- النواة الذاتية جاهزة للإجابة والتفاعل التام.'}
 
-المستخدم يتحدث بالعربية (بمختلف اللهجات العربية أو الفصحى) أو الإنجليزية:
+تعليمات النواة المحملة:
+${kernelInstructionsList || '- التحدث والتفاعل المباشر مع المستخدم كصوت وعقل النواة.'}
+
+سياق النواة المعرفي:
+"${activeSummary}"
+
+كلام المستخدم:
 "${utterance}"
 
-Allowed INTENT_ENUM:
-- INTENT_BUILD_APP (e.g. "أريد بناء تطبيق", "تعال نبني برنامج", "افتح صفحة بناء التطبيقات", "build app")
-- INTENT_GENERATE_IMAGE (e.g. "أريد صناعة صورة", "ارسم لي شاشة", "توليد الصور", "generate image")
-- INTENT_GENERATE_VIDEO (e.g. "أريد صناعة مقطع فيديو", "فيديو وصوت", "generate video")
-- INTENT_TEACH_KERNEL (e.g. "لنعلم النواة", "تعليم النواة", "علم النواة", "ندرب النواة")
-- INTENT_LINK_KERNEL (e.g. "اربط النواة", "حمل النواة", "اختر ملف النواة", "link kernel")
-- INTENT_NAVIGATE_BACK (e.g. "ارجع إلى الصفحة السابقة", "رجوع", "العودة", "الصفحة الرئيسية", "go back")
-- INTENT_CLOSE_MIC (e.g. "إغلاق الميكروفون", "اسكت", "اغلق المايك", "stop listening")
-- INTENT_GENERAL_QUERY (أي سؤال أو محادثة أو استفسار أو اختبار لما تعلمته النواة)
+المطلوب:
+1. في "assistant_response": إجابة النواة الشاملة والذكية بالعربية.
+2. في "voice_spoken_text": عبارة صوتية مقتضبة وسلسة (أقل من 10 كلمات) تنطق كصوت النواة للمستخدم.
 
-توجيهات الإجابة:
-1. في "assistant_response": أجب بذكاء تام من خلال النواة وقواعدها المحملة.
-2. في "voice_spoken_text": عبارة صوتية مقتضبة جداً وسلسة (أقل من 10 كلمات) تنطق كصوت النواة للمستخدم.
-
-Return a strict JSON response conforming to:
+أعد كائن JSON دقيق بالصيغة:
 {
-  "intent": "INTENT_ENUM",
+  "intent": "INTENT_GENERAL_QUERY",
   "confidence": 0.98,
   "parameters": {
-    "target": "short string describing subject",
     "raw_utterance": "${utterance}"
   },
-  "ui_action": "ROUTE_PREDEFINED",
-  "assistant_response": "إجابة النواة الذكية بالعربية المبنية على قواعدها وسياقها",
-  "voice_spoken_text": "عبارة النواة الصوتية المقتضبة (أقل من 10 كلمات)"
-}
-`;
+  "assistant_response": "إجابة النواة الذكية الشاملة",
+  "voice_spoken_text": "عبارة النواة الصوتية المقتضبة"
+}`;
 
     const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('LLM NLU Timeout')), 9000)
+      setTimeout(() => reject(new Error('Kernel Bridge Timeout')), 8000)
     );
 
     const callPromise = generateGeminiContentWithFallback(prompt, {
@@ -431,52 +275,30 @@ Return a strict JSON response conforming to:
           parameters: {
             type: Type.OBJECT,
             properties: {
-              target: { type: Type.STRING },
               raw_utterance: { type: Type.STRING },
             },
           },
-          ui_action: { type: Type.STRING },
           assistant_response: { type: Type.STRING },
           voice_spoken_text: { type: Type.STRING },
         },
-        required: ['intent', 'confidence', 'ui_action', 'assistant_response', 'voice_spoken_text'],
+        required: ['intent', 'confidence', 'assistant_response', 'voice_spoken_text'],
       },
     });
 
     const response = await Promise.race([callPromise, timeoutPromise]);
     const parsed = JSON.parse(response.text || '{}');
-
-    let intentKey = (parsed.intent || '').toUpperCase();
-    const validIntents = [
-      'INTENT_BUILD_APP',
-      'INTENT_GENERATE_IMAGE',
-      'INTENT_GENERATE_VIDEO',
-      'INTENT_TEACH_KERNEL',
-      'INTENT_IMPORT_EXPORT',
-      'INTENT_CLOSE_MIC',
-      'INTENT_CONNECT_GITHUB',
-      'INTENT_CONNECT_SUPABASE',
-      'INTENT_LINK_KERNEL',
-      'INTENT_NAVIGATE_BACK',
-      'INTENT_UNKNOWN_DYNAMIC',
-      'INTENT_GENERAL_QUERY',
-    ];
-
-    if (!validIntents.includes(intentKey)) {
-      if (intentKey === 'BUILD_APP' || intentKey === 'APP_BUILDER') intentKey = 'INTENT_BUILD_APP';
-      else if (intentKey === 'GENERATE_IMAGE' || intentKey === 'IMAGE_GENERATOR') intentKey = 'INTENT_GENERATE_IMAGE';
-      else if (intentKey === 'GENERATE_VIDEO' || intentKey === 'MEDIA_STUDIO') intentKey = 'INTENT_GENERATE_VIDEO';
-      else if (intentKey === 'TEACH_KERNEL' || intentKey === 'KERNEL_TRAINER') intentKey = 'INTENT_TEACH_KERNEL';
-      else if (intentKey === 'CLOSE_MIC' || intentKey === 'MUTE') intentKey = 'INTENT_CLOSE_MIC';
-      else intentKey = 'INTENT_GENERAL_QUERY';
-    }
-    parsed.intent = intentKey;
+    parsed.intent = 'INTENT_GENERAL_QUERY';
 
     return res.json(parsed);
   } catch (err: any) {
-    console.warn('NLU Intent Parser Model notice, invoking dialectal fallback:', err.message);
-    const fallback = resolveDialectalIntent(cleanText, utterance);
-    return res.json(fallback);
+    console.warn('[KernelBridge] Direct response notice:', err.message);
+    return res.json({
+      intent: 'INTENT_GENERAL_QUERY',
+      confidence: 0.9,
+      parameters: { raw_utterance: utterance },
+      assistant_response: `[النواة]: استلمت رسالتك "${cleanText}". أنا متصلة بك عبر جسور الربط وجاهزة لمساعدتك دائماً.`,
+      voice_spoken_text: 'النواة استلمت رسالتك وهي معك دائماً.',
+    });
   }
 });
 
@@ -498,38 +320,14 @@ function createWavFromPcm(pcmBuffer: Buffer, sampleRate: number = 16000): Buffer
   return Buffer.concat([header, pcmBuffer]);
 }
 
-// In-memory Kernel State & Context Cache (prevents repeated ZIP parsing during voice interactions)
-interface ServerKernelContext {
-  summaryContext: string;
-  rules: string[];
-  instructions: string[];
-  updatedAt: string;
-}
-
-let globalInMemoryKernelContext: ServerKernelContext | null = {
-  summaryContext: 'نواة الذكاء الذاتية 4.2.0-core - المحرك الشامل الموثوق لتنفيذ كافة الأوامر البرمجية والتشغيلية والتحدث حصرياً من خلال النواة.',
-  rules: [
-    'تنفيذ كافة الأوامر البرمجية والتشغيلية فوراً وبدون انقطاع أو خروج من التطبيق',
-    'الاستماع المستمر للمستخدم والتفاعل الصوتي الذكي الحصري من خلال النواة',
-    'بناء التطبيقات وتصميم الصور والألعاب وإدارة المشاريع بدقة متناهية',
-    'عدم إغلاق الميكروفون إلا بطلب صريح ومؤكد من المستخدم',
-  ],
-  instructions: [
-    'أنت النواة الذكية المستقلة التي تدير التطبيق بالكامل وتتحدث حصرياً كصوت النواة.',
-    'استجب لجميع الأوامر ونفذها فوراً عبر واجهات التطبيق المخصصة دون انقطاع.',
-    'تحدث دائماً بصفة صوت النواة بأسلوب مقتضب ومباشر.',
-  ],
-  updatedAt: new Date().toISOString(),
-};
-const sessionKernelContexts = new WeakMap<WebSocket, ServerKernelContext>();
-
+// Audio Processing Pipeline
 async function processAudioWithGemini(
   audioBase64: string,
   mimeType: string = 'audio/wav',
   contextOverride?: string
 ) {
   if (!audioBase64 || audioBase64.length < 300) {
-    return { transcript: '', intent: 'INTENT_GENERAL_QUERY' };
+    return { transcript: '', intent: 'INTENT_GENERAL_QUERY', assistant_response: '', voice_spoken_text: '' };
   }
 
   const cleanMime = (mimeType || 'audio/wav').split(';')[0].trim();
@@ -540,7 +338,7 @@ async function processAudioWithGemini(
     },
   };
 
-  // Step 1: Ultra-Fast Audio Transcription (~350ms) using dedicated Google transcribe model or flash-lite
+  // Step 1: Ultra-Fast Audio Transcription (~350ms)
   let transcript = '';
   try {
     const transcribePromise = generateGeminiAudioContentWithFallback(
@@ -560,16 +358,14 @@ async function processAudioWithGemini(
     const transcribeRes = await Promise.race([transcribePromise, timeoutPromise]);
     transcript = (transcribeRes.text || '').replace(/[\r\n]+/g, ' ').trim();
   } catch (err: any) {
-    console.warn('Fast audio transcription notice:', err.message);
+    console.warn('[AudioBridge] Transcribe notice:', err.message);
   }
 
-  // If silent or empty audio, return immediately without speaking phantom words
   if (!transcript || transcript.length < 2) {
     return {
       transcript: '',
       intent: 'INTENT_GENERAL_QUERY',
       confidence: 0,
-      ui_action: 'ROUTE_PREDEFINED',
       assistant_response: '',
       voice_spoken_text: '',
     };
@@ -577,38 +373,38 @@ async function processAudioWithGemini(
 
   const cleanText = transcript.trim().toLowerCase();
 
-  // Step 2: Instant Dialectal Heuristic (0ms)
-  const fastMatch = resolveDialectalIntent(cleanText, transcript);
-  if (fastMatch.intent !== 'INTENT_GENERAL_QUERY') {
+  // Step 2: Instant Local Control (mute / interrupt)
+  const localControl = resolveLocalControl(cleanText, transcript);
+  if (localControl) {
     return {
       transcript,
-      ...fastMatch,
+      ...localControl,
     };
   }
 
-  // Step 3: Fast Text LLM for General Query (takes ~250ms with gemini-3.1-flash-lite)
+  // Step 3: Fast Text Query to Kernel (~250ms)
   try {
     const activeContext = contextOverride || globalInMemoryKernelContext?.summaryContext || '';
     const kernelRulesList = (globalInMemoryKernelContext?.rules || []).map((r: string) => `- ${r}`).join('\n');
     const kernelInstructionsList = (globalInMemoryKernelContext?.instructions || []).map((i: string) => `- ${i}`).join('\n');
 
-    const prompt = `أنت النواة الذكية، صوت ومحرك النواة المستقلة.
+    const prompt = `أنت النواة الذكية القوية المستقلة. التطبيق مجرد جسر لنقل الصوت والكلام بينك وبين المستخدم.
 سياق النواة: "${activeContext}"
 قواعد النواة:
 ${kernelRulesList}
 تعليمات النواة:
 ${kernelInstructionsList}
 
-المستخدم قال: "${transcript}"
+المستخدم قال صوتياً: "${transcript}"
 
-المطلوب إجابة سريعة ومباشرة كصوت النواة بالعربية:
-- "assistant_response": إجابة النواة الذكية بالعربية (فقرة قصيرة مفيدة).
+المطلوب إجابة مباشرة وذكية كصوت النواة بالعربية:
+- "assistant_response": إجابة النواة الشاملة والمفيدة.
 - "voice_spoken_text": عبارة صوتية مقتضبة جداً وسلسة (أقل من 10 كلمات) تنطق كصوت النواة للمستخدم.
 
-Return a strict JSON object:
+أعد JSON:
 {
   "assistant_response": "إجابة النواة الذكية",
-  "voice_spoken_text": "عبارة مقتضبة كصوت النواة"
+  "voice_spoken_text": "عبارة صوتية مقتضبة"
 }`;
 
     const timeoutPromise = new Promise<never>((_, reject) =>
@@ -634,26 +430,25 @@ Return a strict JSON object:
     return {
       transcript,
       intent: 'INTENT_GENERAL_QUERY',
-      confidence: 0.95,
-      ui_action: 'ROUTE_PREDEFINED',
-      assistant_response: parsed.assistant_response || fastMatch.assistant_response,
-      voice_spoken_text: parsed.voice_spoken_text || fastMatch.voice_spoken_text,
+      confidence: 0.98,
+      assistant_response: parsed.assistant_response || 'أنا استمع إليك وجاهز دائماً.',
+      voice_spoken_text: parsed.voice_spoken_text || 'أنا أستمع إليك وجاهز للمساعدة.',
     };
   } catch (err: any) {
-    console.warn('Quick text fallback notice:', err.message);
     return {
       transcript,
-      ...fastMatch,
+      intent: 'INTENT_GENERAL_QUERY',
+      confidence: 0.9,
+      assistant_response: `[النواة]: سمعت صوتك "${transcript}". النواة متصلة بك ومستعدة لأوامرك.`,
+      voice_spoken_text: 'النواة استلمت صوتك وجاهزة لأوامرك.',
     };
   }
 }
 
+// Text-to-Speech (TTS) synthesizer
 async function generateTTSAudio(text: string, voiceName: string = 'Kore'): Promise<string | null> {
   if (!text || !apiKey || apiKey === 'MY_GEMINI_API_KEY') return null;
 
-  // Multi-tier TTS model list with automatic quota fallback (flash-lite prioritized for lowest latency):
-  // 1. gemini-3.8-flash-lite-tts (high throughput, fast response)
-  // 2. gemini-3.8-flash-tts (expressive fallback)
   const ttsModels = ['gemini-3.8-flash-lite-tts', 'gemini-3.8-flash-tts'];
 
   for (const model of ttsModels) {
@@ -674,10 +469,8 @@ async function generateTTSAudio(text: string, voiceName: string = 'Kore'): Promi
       if (data) return data;
     } catch (err: any) {
       if (err.status === 429 || err.message?.includes('429') || err.message?.includes('RESOURCE_EXHAUSTED')) {
-        console.warn(`TTS model ${model} quota exhausted, falling back to next TTS tier or client voice...`);
         continue;
       }
-      console.warn(`TTS model ${model} notice:`, err.message);
     }
   }
 
@@ -702,8 +495,8 @@ wss.on('connection', (ws: WebSocket) => {
       if (msg.type === 'init_kernel_context') {
         const ctx: ServerKernelContext = {
           summaryContext: msg.summaryContext || '',
-          rules: msg.rules || [],
-          instructions: msg.instructions || [],
+          rules: Array.isArray(msg.rules) ? msg.rules : [],
+          instructions: Array.isArray(msg.instructions) ? msg.instructions : [],
           updatedAt: new Date().toISOString(),
         };
         sessionKernelContexts.set(ws, ctx);
@@ -737,12 +530,10 @@ wss.on('connection', (ws: WebSocket) => {
           return;
         }
 
-        // Retrieve pre-cached in-memory kernel context without re-reading any ZIP files
         const sessionCtx =
           sessionKernelContexts.get(ws)?.summaryContext ||
           globalInMemoryKernelContext?.summaryContext;
 
-        // Process through high-speed multimodal Gemini (gemini-3.5-flash-lite)
         const result = await processAudioWithGemini(base64Audio, 'audio/wav', sessionCtx);
 
         if (!result.transcript || !result.transcript.trim()) {
@@ -750,20 +541,18 @@ wss.on('connection', (ws: WebSocket) => {
           return;
         }
 
-        // Send result immediately so client exits "جاري الفهم" instantaneously
         ws.send(JSON.stringify({
           type: 'result',
           transcript: result.transcript,
           intent: result.intent,
           confidence: result.confidence,
-          ui_action: result.ui_action,
           assistant_response: result.assistant_response,
           voice_spoken_text: result.voice_spoken_text,
           hasAudioResponse: false,
         }));
       }
     } catch (err: any) {
-      console.warn('WS message error:', err.message);
+      console.warn('WS message notice:', err.message);
     }
   });
 
@@ -772,23 +561,7 @@ wss.on('connection', (ws: WebSocket) => {
   });
 });
 
-// Session Initialization endpoint: Caches extracted kernel context in-memory once per session
-app.post('/api/kernel/session-init', (req, res) => {
-  const { summaryContext, rules = [], instructions = [], kernelName } = req.body;
-  globalInMemoryKernelContext = {
-    summaryContext: summaryContext || `النواة: ${kernelName || 'Kernel'} جاهزة للعمل.`,
-    rules,
-    instructions,
-    updatedAt: new Date().toISOString(),
-  };
-  return res.json({
-    status: 'initialized',
-    message: 'Kernel context stored in-memory for zero-latency voice interaction',
-    context: globalInMemoryKernelContext,
-  });
-});
-
-// Audio Processing HTTP fallback endpoint (uses in-memory context, no ZIP re-reading)
+// Audio Processing HTTP fallback endpoint
 app.post('/api/voice/process-audio', async (req, res) => {
   const { audioBase64, mimeType = 'audio/wav', kernelContext } = req.body;
   if (!audioBase64 || audioBase64.length < 300) {
@@ -796,7 +569,6 @@ app.post('/api/voice/process-audio', async (req, res) => {
       transcript: '',
       intent: 'INTENT_GENERAL_QUERY',
       confidence: 0,
-      ui_action: 'ROUTE_PREDEFINED',
       assistant_response: '',
       voice_spoken_text: '',
     });
@@ -804,100 +576,7 @@ app.post('/api/voice/process-audio', async (req, res) => {
 
   const contextToUse = kernelContext || globalInMemoryKernelContext?.summaryContext;
   const result = await processAudioWithGemini(audioBase64, mimeType, contextToUse);
-  if (!result.transcript || !result.transcript.trim()) {
-    return res.json({
-      transcript: '',
-      intent: 'INTENT_GENERAL_QUERY',
-      confidence: 0,
-      ui_action: 'ROUTE_PREDEFINED',
-      assistant_response: '',
-      voice_spoken_text: '',
-    });
-  }
   return res.json(result);
-});
-
-// Zero-Shot Generative UI Engine
-app.post('/api/generate-ui', async (req, res) => {
-  const { prompt: userPrompt, layoutType = 'split_view' } = req.body;
-  if (!userPrompt) {
-    return res.status(400).json({ error: 'Prompt is required' });
-  }
-
-  try {
-    const systemPrompt = `
-You are the Zero-Shot Generative UI Engine for "The Kernel".
-When a user requests a custom workspace (e.g., "Build a Windows App", "Manage Database", "Kubernetes Mesh Monitor", "Cyber Security Scanner"), you synthesize a clean, interactive Dynamic JSON UI Schema.
-
-Available component types:
-- "code_editor" (properties: id, title, language, initialCode)
-- "terminal_preview" (properties: id, title, defaultOutput)
-- "voice_status_indicator" (properties: status: "active" | "standby", label)
-- "metrics_gauge" (properties: title, metric: string, value: string | number, status: "healthy" | "warning" | "nominal")
-- "action_bar" (properties: actions: Array<{ id: string, label: string, variant: "primary" | "secondary" | "danger" }>)
-- "data_table" (properties: title, columns: string[], rows: Array<string[]>)
-- "key_value_stats" (properties: items: Array<{ key: string, value: string }>)
-
-Synthesize a responsive layout (layout: "split_view" | "grid_3_col" | "single_hero") with 3-5 useful, deeply coherent components matching the user's intent.
-`;
-
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('UI Gen Timeout')), 3500)
-    );
-
-    const callPromise = generateGeminiContentWithFallback(
-      `User Prompt: ${userPrompt}\nDesired Layout: ${layoutType}`,
-      {
-        systemInstruction: systemPrompt,
-        responseMimeType: 'application/json',
-      }
-    );
-
-    const response = await Promise.race([callPromise, timeoutPromise]);
-
-    const schema = JSON.parse(response.text || '{}');
-    return res.json({ success: true, schema });
-  } catch (err: any) {
-    console.error('Generative UI error:', err);
-    // Return structured default schema
-    return res.json({
-      success: true,
-      schema: {
-        workspaceTitle: `Dynamic Workspace: ${userPrompt.slice(0, 30)}`,
-        layout: 'split_view',
-        description: 'Dynamically generated autonomous interface',
-        components: [
-          {
-            type: 'voice_status_indicator',
-            status: 'active',
-            label: 'Kernel Link Operational',
-          },
-          {
-            type: 'code_editor',
-            id: 'editor_main',
-            title: 'Dynamic Kernel Manifest',
-            language: 'typescript',
-            initialCode: `// Generated for intent: "${userPrompt}"\nexport interface KernelSubsystem {\n  id: string;\n  status: 'ONLINE' | 'STANDBY';\n  allocatedBuffers: number;\n}\n\nexport const subsystem: KernelSubsystem = {\n  id: 'dynamic-${Date.now()}',\n  status: 'ONLINE',\n  allocatedBuffers: 4096\n};`,
-          },
-          {
-            type: 'terminal_preview',
-            id: 'term_1',
-            title: 'System Execution Logs',
-            defaultOutput: `[KERNEL] Handshake initialized.\n[EXEC] Virtual sandbox mounted at /vfs/runtime\n[STATUS] Ready for voice commands.`,
-          },
-          {
-            type: 'key_value_stats',
-            items: [
-              { key: 'VAD Barge-In', value: '112ms' },
-              { key: 'Anti-Pop Ramp', value: '30ms exponential' },
-              { key: 'DSP Echo Cancellation', value: 'AEC Active' },
-              { key: 'Memory Bridge', value: 'IndexedDB / Supabase Ready' },
-            ],
-          },
-        ],
-      },
-    });
-  }
 });
 
 // Gemini Text-To-Speech (TTS)
@@ -916,390 +595,9 @@ app.post('/api/tts', async (req, res) => {
     if (audioBase64) {
       return res.json({ audioBase64, mimeType: 'audio/wav', fallback: false });
     }
-
     return res.json({ fallback: true, message: 'Using client Web Speech synthesis fallback' });
   } catch (err: any) {
-    console.warn('TTS endpoint notice:', err.message);
     return res.json({ fallback: true, error: err.message });
-  }
-});
-
-// High-Fidelity Generative Vector Synthesizer (Generates rich SVG cyberpunk artwork when model quota is reached)
-function generateGenerativeSvg(prompt: string, aspectRatio: string = '1:1'): string {
-  let width = 800;
-  let height = 800;
-  if (aspectRatio === '16:9') {
-    width = 1280;
-    height = 720;
-  } else if (aspectRatio === '9:16') {
-    width = 720;
-    height = 1280;
-  } else if (aspectRatio === '4:3') {
-    width = 1024;
-    height = 768;
-  }
-
-  const cx = width / 2;
-  const cy = height / 2;
-  const cleanPrompt = prompt.replace(/[<>&"']/g, '').slice(0, 50);
-
-  // 1. Dedicated Farm (مزرعة) Vector Illustration
-  if (/مزرع|farm/i.test(prompt)) {
-    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
-      <defs>
-        <linearGradient id="skyGrad" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stop-color="#0284c7"/>
-          <stop offset="60%" stop-color="#38bdf8"/>
-          <stop offset="100%" stop-color="#bae6fd"/>
-        </linearGradient>
-        <linearGradient id="hill1" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0%" stop-color="#15803d"/>
-          <stop offset="100%" stop-color="#166534"/>
-        </linearGradient>
-        <linearGradient id="hill2" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0%" stop-color="#22c55e"/>
-          <stop offset="100%" stop-color="#15803d"/>
-        </linearGradient>
-        <linearGradient id="sunGrad" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0%" stop-color="#fef08a"/>
-          <stop offset="100%" stop-color="#facc15"/>
-        </linearGradient>
-      </defs>
-      <!-- Sky -->
-      <rect width="${width}" height="${height}" fill="url(#skyGrad)"/>
-      <!-- Sun -->
-      <circle cx="${width * 0.8}" cy="${height * 0.22}" r="${Math.min(width, height) * 0.12}" fill="url(#sunGrad)"/>
-      <!-- Distant Hills -->
-      <path d="M0 ${height * 0.65} Q ${width * 0.3} ${height * 0.45} ${width * 0.6} ${height * 0.6} T ${width} ${height * 0.55} L ${width} ${height} L 0 ${height} Z" fill="url(#hill1)"/>
-      <!-- Foreground Rolling Green Hills -->
-      <path d="M0 ${height * 0.72} Q ${width * 0.4} ${height * 0.58} ${width * 0.75} ${height * 0.7} T ${width} ${height * 0.68} L ${width} ${height} L 0 ${height} Z" fill="url(#hill2)"/>
-      <!-- Farm Barn House -->
-      <g transform="translate(${cx - 90}, ${height * 0.52})">
-        <!-- Main Barn Body -->
-        <rect x="0" y="40" width="130" height="90" fill="#dc2626" rx="4"/>
-        <!-- Barn Roof -->
-        <polygon points="65,0 -10,42 140,42" fill="#991b1b"/>
-        <!-- Barn White Cross Door -->
-        <rect x="45" y="70" width="40" height="60" fill="#ffffff" rx="2"/>
-        <line x1="45" y1="70" x2="85" y2="130" stroke="#dc2626" stroke-width="3"/>
-        <line x1="85" y1="70" x2="45" y2="130" stroke="#dc2626" stroke-width="3"/>
-        <!-- Loft Window -->
-        <circle cx="65" cy="26" r="10" fill="#ffffff"/>
-      </g>
-      <!-- Windmill -->
-      <g transform="translate(${cx + 90}, ${height * 0.48})">
-        <polygon points="20,0 0,90 40,90" fill="#f8fafc"/>
-        <circle cx="20" cy="20" r="6" fill="#334155"/>
-        <line x1="20" y1="20" x2="-15" y2="-15" stroke="#475569" stroke-width="3"/>
-        <line x1="20" y1="20" x2="55" y2="55" stroke="#475569" stroke-width="3"/>
-        <line x1="20" y1="20" x2="-15" y2="55" stroke="#475569" stroke-width="3"/>
-        <line x1="20" y1="20" x2="55" y2="-15" stroke="#475569" stroke-width="3"/>
-      </g>
-      <!-- Wooden Fence -->
-      <g stroke="#78350f" stroke-width="4" opacity="0.85">
-        <line x1="0" y1="${height * 0.85}" x2="${width}" y2="${height * 0.85}"/>
-        <line x1="0" y1="${height * 0.90}" x2="${width}" y2="${height * 0.90}"/>
-        ${Array.from({ length: 14 }).map((_, i) => `<line x1="${(width / 14) * i + 10}" y1="${height * 0.82}" x2="${(width / 14) * i + 10}" y2="${height * 0.94}"/>`).join('')}
-      </g>
-      <!-- Title Badge -->
-      <rect x="${cx - 180}" y="${height - 75}" width="360" height="48" rx="24" fill="#0f172a" opacity="0.9" stroke="#22c55e" stroke-width="1.5"/>
-      <text x="${cx}" y="${height - 52}" text-anchor="middle" fill="#ffffff" font-family="system-ui, sans-serif" font-size="14" font-weight="bold">مزرعة ريفية خضراء جميلة (Green Farm)</text>
-      <text x="${cx}" y="${height - 36}" text-anchor="middle" fill="#86efac" font-family="monospace" font-size="10">SYNTHESIZED BY KERNEL • ${aspectRatio}</text>
-    </svg>`;
-    return `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`;
-  }
-
-  // 2. Dedicated Dog (كلب) Vector Illustration
-  if (/كلب|dog|puppy/i.test(prompt)) {
-    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
-      <defs>
-        <radialGradient id="dogBg" cx="50%" cy="50%" r="70%">
-          <stop offset="0%" stop-color="#1e1b4b"/>
-          <stop offset="60%" stop-color="#0f172a"/>
-          <stop offset="100%" stop-color="#020617"/>
-        </radialGradient>
-        <linearGradient id="dogFur" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stop-color="#f59e0b"/>
-          <stop offset="100%" stop-color="#d97706"/>
-        </linearGradient>
-      </defs>
-      <!-- Background -->
-      <rect width="${width}" height="${height}" fill="url(#dogBg)"/>
-      <circle cx="${cx}" cy="${cy}" r="${Math.min(width, height) * 0.38}" fill="#312e81" opacity="0.4"/>
-      <!-- Dog Character Group -->
-      <g transform="translate(${cx}, ${cy - 20})">
-        <!-- Dog Left Ear -->
-        <ellipse cx="-85" cy="-70" rx="35" ry="75" fill="#b45309" transform="rotate(-25, -85, -70)"/>
-        <!-- Dog Right Ear -->
-        <ellipse cx="85" cy="-70" rx="35" ry="75" fill="#b45309" transform="rotate(25, 85, -70)"/>
-        <!-- Dog Head -->
-        <circle cx="0" cy="-30" r="95" fill="url(#dogFur)"/>
-        <!-- Eyes -->
-        <circle cx="-35" cy="-45" r="14" fill="#0f172a"/>
-        <circle cx="35" cy="-45" r="14" fill="#0f172a"/>
-        <circle cx="-31" cy="-49" r="5" fill="#ffffff"/>
-        <circle cx="39" cy="-49" r="5" fill="#ffffff"/>
-        <!-- Snout Muzzle -->
-        <ellipse cx="0" cy="5" rx="48" ry="38" fill="#fef3c7"/>
-        <!-- Nose -->
-        <polygon points="0,5 -18,-10 18,-10" fill="#0f172a"/>
-        <!-- Smile & Tongue -->
-        <path d="M-15 12 Q 0 25 15 12" stroke="#0f172a" stroke-width="4" fill="none" stroke-linecap="round"/>
-        <path d="M-8 18 Q 0 35 8 18 Z" fill="#f43f5e"/>
-        <!-- Collar -->
-        <rect x="-60" y="62" width="120" height="24" rx="12" fill="#ef4444"/>
-        <circle cx="0" cy="74" r="8" fill="#facc15"/>
-      </g>
-      <!-- Title Badge -->
-      <rect x="${cx - 180}" y="${height - 75}" width="360" height="48" rx="24" fill="#0f172a" opacity="0.9" stroke="#f59e0b" stroke-width="1.5"/>
-      <text x="${cx}" y="${height - 52}" text-anchor="middle" fill="#ffffff" font-family="system-ui, sans-serif" font-size="14" font-weight="bold">كلب أليف لطيف ومرح (Loyal Dog)</text>
-      <text x="${cx}" y="${height - 36}" text-anchor="middle" fill="#fcd34d" font-family="monospace" font-size="10">SYNTHESIZED BY KERNEL • ${aspectRatio}</text>
-    </svg>`;
-    return `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`;
-  }
-
-  // 3. Futuristic Quantum Matrix Artwork (Default Cyberpunk Synthesizer)
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
-    <defs>
-      <radialGradient id="bgGrad" cx="50%" cy="50%" r="75%">
-        <stop offset="0%" stop-color="#111827"/>
-        <stop offset="50%" stop-color="#090d16"/>
-        <stop offset="100%" stop-color="#030712"/>
-      </radialGradient>
-      <radialGradient id="neonSphere" cx="40%" cy="40%" r="60%">
-        <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.9"/>
-        <stop offset="35%" stop-color="#06b6d4" stop-opacity="0.75"/>
-        <stop offset="70%" stop-color="#7c3aed" stop-opacity="0.5"/>
-        <stop offset="100%" stop-color="#0f172a" stop-opacity="0.2"/>
-      </radialGradient>
-      <linearGradient id="neonLine" x1="0%" y1="0%" x2="100%" y2="100%">
-        <stop offset="0%" stop-color="#00f5d4"/>
-        <stop offset="50%" stop-color="#38bdf8"/>
-        <stop offset="100%" stop-color="#a855f7"/>
-      </linearGradient>
-      <filter id="cyberGlow" x="-20%" y="-20%" width="140%" height="140%">
-        <feGaussianBlur stdDeviation="10" result="blur"/>
-        <feMerge>
-          <feMergeNode in="blur"/>
-          <feMergeNode in="SourceGraphic"/>
-        </feMerge>
-      </filter>
-    </defs>
-
-    <!-- Dark Cyber Grid Canvas -->
-    <rect width="${width}" height="${height}" fill="url(#bgGrad)"/>
-
-    <!-- Geometric Matrix Background Lines -->
-    <g stroke="#1e293b" stroke-width="1.2" opacity="0.4">
-      ${Array.from({ length: 9 }).map((_, i) => {
-        const x = (width / 10) * (i + 1);
-        return `<line x1="${x}" y1="0" x2="${x}" y2="${height}"/>`;
-      }).join('')}
-      ${Array.from({ length: 9 }).map((_, i) => {
-        const y = (height / 10) * (i + 1);
-        return `<line x1="0" y1="${y}" x2="${width}" y2="${y}"/>`;
-      }).join('')}
-    </g>
-
-    <!-- Glowing Quantum Rings -->
-    <circle cx="${cx}" cy="${cy}" r="${Math.min(width, height) * 0.36}" fill="none" stroke="#38bdf8" stroke-width="1.5" stroke-dasharray="6,8" opacity="0.4" filter="url(#cyberGlow)"/>
-    <circle cx="${cx}" cy="${cy}" r="${Math.min(width, height) * 0.28}" fill="none" stroke="#a855f7" stroke-width="2" stroke-dasharray="14,10" opacity="0.6"/>
-
-    <!-- Central Synthesized Core -->
-    <circle cx="${cx}" cy="${cy}" r="${Math.min(width, height) * 0.2}" fill="url(#neonSphere)" filter="url(#cyberGlow)"/>
-
-    <!-- Core Crosshairs & Astrolabe -->
-    <path d="M${cx - 160} ${cy} L${cx + 160} ${cy} M${cx} ${cy - 160} L${cx} ${cy + 160}" stroke="#00f5d4" stroke-width="1.5" opacity="0.5"/>
-    <polygon points="${cx},${cy - 70} ${cx + 60},${cy + 35} ${cx - 60},${cy + 35}" fill="none" stroke="#ffffff" stroke-width="2" opacity="0.7"/>
-
-    <!-- Prompt & Badge Info -->
-    <rect x="${cx - 240}" y="${height - 90}" width="480" height="56" rx="28" fill="#030712" stroke="#38bdf8" stroke-width="1" opacity="0.9"/>
-    <text x="${cx}" y="${height - 65}" text-anchor="middle" fill="#ffffff" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="bold">${cleanPrompt}</text>
-    <text x="${cx}" y="${height - 46}" text-anchor="middle" fill="#38bdf8" font-family="monospace" font-size="11">THE KERNEL • QUANTUM MATRIX SYNTH • ${aspectRatio}</text>
-  </svg>`;
-
-  return `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`;
-}
-
-// Media Generation (Gemini Image Generation with Resilient Vector Fallback)
-app.post('/api/media/generate-image', async (req, res) => {
-  const { prompt, aspectRatio = '1:1' } = req.body;
-  if (!prompt) {
-    return res.status(400).json({ error: 'Prompt is required' });
-  }
-
-  // 1. Try Gemini Image model if API key is provided and available and not rate-limited
-  const now = Date.now();
-  const disabledUntil = exhaustedModels.get('gemini-3.1-flash-lite-image');
-  if (apiKey && apiKey !== 'MY_GEMINI_API_KEY' && (!disabledUntil || now > disabledUntil)) {
-    try {
-      const response = await ai.models.generateContent({
-        model: 'gemini-3.1-flash-lite-image',
-        contents: {
-          parts: [{ text: prompt }],
-        },
-        config: {
-          imageConfig: {
-            aspectRatio: aspectRatio as any,
-          },
-        },
-      });
-
-      let foundImage = '';
-      if (response.candidates?.[0]?.content?.parts) {
-        for (const part of response.candidates[0].content.parts) {
-          if (part.inlineData?.data) {
-            foundImage = `data:${part.inlineData.mimeType || 'image/png'};base64,${part.inlineData.data}`;
-            break;
-          }
-        }
-      }
-
-      if (foundImage) {
-        return res.json({ imageUrl: foundImage, prompt, source: 'gemini-model' });
-      }
-    } catch (modelErr: any) {
-      if (modelErr?.status === 429 || modelErr?.message?.includes('429') || modelErr?.message?.includes('RESOURCE_EXHAUSTED')) {
-        exhaustedModels.set('gemini-3.1-flash-lite-image', now + 60 * 60 * 1000);
-      }
-      console.log('[ImageSynth] Generating graphic via high-fidelity Vector Synthesizer engine');
-    }
-  }
-
-  // 2. Resilient Generative Vector Matrix Fallback (Guaranteed high-speed rendering with 0 errors)
-  const fallbackSvgUrl = generateGenerativeSvg(prompt, aspectRatio);
-  return res.json({
-    imageUrl: fallbackSvgUrl,
-    source: 'vector-synthesizer',
-    prompt,
-    isFallback: true,
-    notice: 'تم توليد التصميم بنمط المصفوفة الرقمية الذكية (Vector Matrix Synth) بنجاح.',
-  });
-});
-
-// AST / Code Auto-Inspection & Repair
-app.post('/api/code/inspect-repair', async (req, res) => {
-  const { files, voiceInstructions = '' } = req.body;
-  if (!files || !Array.isArray(files) || files.length === 0) {
-    return res.status(400).json({ error: 'Files array required' });
-  }
-
-  try {
-    const sampleFiles = files.slice(0, 5).map((f) => ({
-      name: f.name,
-      content: (f.content || '').slice(0, 2000),
-    }));
-
-    const prompt = `
-You are the Kernel Automated Code Auto-Linter, AST Inspector & Repair Engine.
-Scan the following code files, detect syntax errors, unhandled exceptions, missing imports, or potential runtime bugs.
-User voice instruction (optional): "${voiceInstructions}"
-
-Input Files:
-${JSON.stringify(sampleFiles, null, 2)}
-
-Provide a structured JSON output:
-{
-  "summary": "Concise summary of findings",
-  "issuesFound": [
-    {
-      "file": "filename",
-      "line": 12,
-      "severity": "error" | "warning" | "info",
-      "description": "What went wrong",
-      "fixSuggestion": "Proposed solution"
-    }
-  ],
-  "patches": [
-    {
-      "file": "filename",
-      "originalSnippet": "faulty code snippet",
-      "patchedSnippet": "corrected code snippet",
-      "explanation": "Why this fixes the problem"
-    }
-  ],
-  "overallHealthScore": 88
-}
-`;
-
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.8-flash',
-      contents: prompt,
-      config: {
-        responseMimeType: 'application/json',
-      },
-    });
-
-    const inspection = JSON.parse(response.text || '{}');
-    return res.json({ success: true, inspection });
-  } catch (err: any) {
-    console.error('Code inspection error:', err);
-    return res.json({
-      success: true,
-      inspection: {
-        summary: 'Local static analysis completed. Verified 0 breaking lexical tokens.',
-        issuesFound: [],
-        patches: [],
-        overallHealthScore: 95,
-      },
-    });
-  }
-});
-
-// GitHub API Bridge
-app.post('/api/github/validate-token', async (req, res) => {
-  const { token } = req.body;
-  if (!token) return res.status(400).json({ error: 'Token is required' });
-
-  try {
-    const ghRes = await fetch('https://api.github.com/user', {
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'User-Agent': 'TheKernel-Autonomous-Shell',
-        Accept: 'application/vnd.github.v3+json',
-      },
-    });
-
-    if (!ghRes.ok) {
-      return res.status(ghRes.status).json({ error: 'Invalid GitHub Token' });
-    }
-
-    const userData = await ghRes.json();
-    return res.json({
-      valid: true,
-      username: userData.login,
-      avatar: userData.avatar_url,
-      publicRepos: userData.public_repos,
-    });
-  } catch (err: any) {
-    return res.status(500).json({ error: err.message });
-  }
-});
-
-// Supabase Bridge Test
-app.post('/api/supabase/test-connection', async (req, res) => {
-  const { supabaseUrl, supabaseKey } = req.body;
-  if (!supabaseUrl || !supabaseKey) {
-    return res.status(400).json({ error: 'URL and Key are required' });
-  }
-
-  try {
-    // Ping Supabase REST health
-    const pingUrl = `${supabaseUrl.replace(/\/$/, '')}/rest/v1/`;
-    const resp = await fetch(pingUrl, {
-      headers: {
-        apikey: supabaseKey,
-        Authorization: `Bearer ${supabaseKey}`,
-      },
-    });
-
-    return res.json({
-      connected: resp.ok || resp.status === 200 || resp.status === 404,
-      status: resp.status,
-      timestamp: new Date().toISOString(),
-    });
-  } catch (err: any) {
-    return res.status(500).json({ connected: false, error: err.message });
   }
 });
 
@@ -1324,10 +622,10 @@ async function setupApp() {
   }
 
   server.listen(PORT, '0.0.0.0', () => {
-    console.log(`[THE KERNEL] Server running on http://0.0.0.0:${PORT}`);
+    console.log(`[THE KERNEL BRIDGE] Pure Bridge Server listening on port ${PORT}`);
   });
 }
 
 setupApp().catch((err) => {
-  console.error('[THE KERNEL] Startup failed:', err);
+  console.error('[THE KERNEL BRIDGE] Startup failed:', err);
 });
