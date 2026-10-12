@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { StorageEngine } from '../../services/storageEngine';
 import { GitHubConfig } from '../../types/kernel';
+import { getApiUrl } from '../../services/apiConfig';
 import {
   Github,
   ArrowRight,
@@ -27,7 +28,7 @@ export const GitHubBridgeView: React.FC<GitHubBridgeViewProps> = ({ onBackToHome
     setStatusMsg(null);
 
     try {
-      const res = await fetch('/api/github/validate-token', {
+      const res = await fetch(getApiUrl('/api/github/validate-token'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ token: token.trim() }),

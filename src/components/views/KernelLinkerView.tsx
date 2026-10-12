@@ -2,6 +2,7 @@ import React, { useRef, useState, useEffect } from 'react';
 import { BoundKernel } from '../../types/kernel';
 import { StorageEngine } from '../../services/storageEngine';
 import { initOrExtractZipKernel, clearZipKernelCache } from '../../services/zipEngine';
+import { getApiUrl } from '../../services/apiConfig';
 import {
   Cpu,
   Upload,
@@ -141,7 +142,7 @@ export const KernelLinkerView: React.FC<KernelLinkerViewProps> = ({
       StorageEngine.saveBoundKernel(newBoundKernel);
 
       // Notify backend cache for conversational context grounding
-      fetch('/api/kernel/session-init', {
+      fetch(getApiUrl('/api/kernel/session-init'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

@@ -3,6 +3,7 @@ import { SileroStyleVAD } from './vadEngine';
 import { StreamingAudioPlayer } from './streamingAudioPlayer';
 import { StorageEngine } from './storageEngine';
 import { parseUtterance, checkQuickIntent, normalizeArabic, requestTTSAudio } from './intentParser';
+import { getApiUrl, getWsUrl } from './apiConfig';
 
 type StatusListener = (status: CallStatus) => void;
 type TranscriptListener = (text: string, isFinal: boolean) => void;
@@ -199,11 +200,11 @@ class AudioEngine {
       speechThresholdMultiplier: 1.15,
       speechThreshold: 0.0012, // Sensitive capture for soft voices
       positiveSpeechThreshold: 0.12, // Smooth speech confidence
-      silenceDurationMs: 950, // Anti-Cutoff: 950ms allows natural hesitation & breathing without cutting off
-      hangoverFrames: 30, // ~960ms trailing speech buffer
+      silenceDurationMs: 550, // Fast response: 550ms natural pause detection without sluggish waiting
+      hangoverFrames: 10, // ~320ms trailing speech buffer
       minSpeechFrames: 2, // 2 frames (~64ms) prevents accidental mouth clicks
-      preRollFrames: 14, // ~448ms pre-roll buffer to preserve first syllables
-      postRollFrames: 14, // ~448ms post-roll buffer to preserve trailing syllables
+      preRollFrames: 10, // ~320ms pre-roll buffer to preserve first syllables
+      postRollFrames: 10, // ~320ms post-roll buffer to preserve trailing syllables
     });
 
     this.player = new StreamingAudioPlayer();
@@ -342,9 +343,8 @@ class AudioEngine {
     if (typeof window === 'undefined') return;
 
     try {
-      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const host = window.location.host;
-      const wsUrl = `${protocol}//${host}/api/voice/stream`;
+      const wsUrl = getWsUrl('/api/voice/stream');
+      if (!wsUrl) return;
 
       this.ws = new WebSocket(wsUrl);
       this.ws.binaryType = 'arraybuffer';
@@ -435,14 +435,14 @@ class AudioEngine {
   public setSensitivity(level: 'HIGH' | 'NORMAL' | 'NOISE_ISOLATION', customSilenceMs?: number) {
     this.sensitivityLevel = level;
     if (level === 'HIGH') {
-      // Anti-Cutoff high sensitivity: 1100ms tolerance
-      this.vad.updateSensitivityPreset('ANTI_CUTOFF', customSilenceMs ?? 1100);
+      // Natural speech with slight pause tolerance: 650ms
+      this.vad.updateSensitivityPreset('ANTI_CUTOFF', customSilenceMs ?? 650);
     } else if (level === 'NORMAL') {
-      // Balanced: 850ms tolerance
-      this.vad.updateSensitivityPreset('BALANCED', customSilenceMs ?? 850);
+      // Balanced rapid response: 500ms
+      this.vad.updateSensitivityPreset('BALANCED', customSilenceMs ?? 500);
     } else {
-      // Fast: 600ms tolerance
-      this.vad.updateSensitivityPreset('FAST', customSilenceMs ?? 600);
+      // Ultra-fast / Noise isolated: 380ms
+      this.vad.updateSensitivityPreset('FAST', customSilenceMs ?? 380);
     }
 
     if (this.micGainNode && this.audioCtx) {
@@ -1028,10 +1028,10 @@ class AudioEngine {
     let isHandled = false;
     const safetyTimer = setTimeout(() => {
       if (!isHandled && this.callStatus === 'THINKING' && this.currentRequestId === reqId) {
-        console.warn('[AudioEngine] 5s Safety Timeout in THINKING state. Resetting to LISTENING.');
+        console.warn('[AudioEngine] Safety Timeout in THINKING state. Resetting to LISTENING.');
         this.resetToListening();
       }
-    }, 5000);
+    }, 3800);
 
     try {
       // 1. Try WebSocket fast-path streaming first
@@ -1047,7 +1047,7 @@ class AudioEngine {
       // 2. HTTP Fallback Path
       try {
         const bound = StorageEngine.loadBoundKernel();
-        const response = await fetch('/api/voice/process-audio', {
+        const response = await fetch(getApiUrl('/api/voice/process-audio'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({

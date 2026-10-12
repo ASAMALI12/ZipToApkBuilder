@@ -10,6 +10,7 @@ import {
   Layers,
   Check,
 } from 'lucide-react';
+import { getApiUrl } from '../../services/apiConfig';
 
 interface GeneratedMediaItem {
   id: string;
@@ -46,7 +47,7 @@ export const MediaGeneratorCanvas: React.FC = () => {
     setIsGenerating(true);
 
     try {
-      const res = await fetch('/api/media/generate-image', {
+      const res = await fetch(getApiUrl('/api/media/generate-image'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ prompt: prompt.trim(), aspectRatio }),

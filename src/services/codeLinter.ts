@@ -1,4 +1,5 @@
 import { ProjectFile, CodeInspectionResult } from '../types/kernel';
+import { getApiUrl } from './apiConfig';
 
 /**
  * Inspects project code files via AST analysis / server endpoint and returns patches
@@ -8,7 +9,7 @@ export async function inspectAndRepairFiles(
   voiceInstructions: string = ''
 ): Promise<CodeInspectionResult> {
   try {
-    const res = await fetch('/api/code/inspect-repair', {
+    const res = await fetch(getApiUrl('/api/code/inspect-repair'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ files, voiceInstructions }),

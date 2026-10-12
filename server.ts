@@ -16,6 +16,17 @@ const server = http.createServer(app);
 const PORT = 3000;
 const isProd = process.env.NODE_ENV === 'production';
 
+// Enable CORS for Android APK (Capacitor/WebView) and external clients
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  next();
+});
+
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
@@ -244,13 +255,13 @@ async function generateGeminiContentWithFallback(contents: any, config?: any) {
   throw lastError;
 }
 
-// Dedicated Audio Gemini invoker using models supporting audio input
+// Dedicated Audio Gemini invoker using models supporting audio input (optimized for low-latency voice)
 async function generateGeminiAudioContentWithFallback(contents: any, config?: any) {
   // Available models supporting audio input per gemini_api skill:
-  // 1. gemini-3.8-flash (General Multimodal with full JSON Schema / Structured Output support)
-  // 2. gemini-3.1-flash-lite (Cost-effective Multimodal fallback with JSON support)
-  // 3. gemini-3.5-transcribe (Dedicated transcription model, plain text only - JSON mode not enabled)
-  const audioModels = ['gemini-3.8-flash', 'gemini-3.1-flash-lite', 'gemini-3.5-transcribe'];
+  // 1. gemini-3.5-transcribe (Fastest dedicated audio transcription model, ~350ms latency)
+  // 2. gemini-3.1-flash-lite (Cost-effective fast multimodal fallback)
+  // 3. gemini-3.8-flash (General Multimodal fallback)
+  const audioModels = ['gemini-3.5-transcribe', 'gemini-3.1-flash-lite', 'gemini-3.8-flash'];
   let lastError: any = null;
   const now = Date.now();
 
@@ -265,7 +276,7 @@ async function generateGeminiAudioContentWithFallback(contents: any, config?: an
       delete sanitizedConfig.thinkingConfig;
     }
 
-    // gemini-3.5-transcribe does not support JSON mode (responseMimeType: 'application/json' or responseSchema)
+    // gemini-3.5-transcribe is dedicated transcription and does not support JSON schema
     if (model.includes('transcribe')) {
       delete sanitizedConfig.responseMimeType;
       delete sanitizedConfig.responseSchema;
@@ -300,13 +311,11 @@ async function generateGeminiAudioContentWithFallback(contents: any, config?: an
       }
       if (err.status === 503 || err.message?.includes('503') || err.message?.includes('UNAVAILABLE')) {
         console.warn(`Audio model ${model} temporarily unavailable (503), trying next fallback...`);
-        // Back off temporarily for 2 minutes
         exhaustedModels.set(model, now + 2 * 60 * 1000);
         continue;
       }
-      // If model failed due to unsupported config or schema, retry next model
       if (err.status === 400 || err.message?.includes('INVALID_ARGUMENT') || err.message?.includes('JSON mode')) {
-        console.warn(`Audio model ${model} does not support requested format:`, err.message);
+        console.warn(`Audio model ${model} format adjustment:`, err.message);
         continue;
       }
       console.warn(`Audio model ${model} error:`, err?.message || err);
@@ -531,108 +540,121 @@ async function processAudioWithGemini(
     },
   };
 
-  const timeoutPromise = new Promise<never>((_, reject) =>
-    setTimeout(() => reject(new Error('Audio transcribe timeout')), 10000)
-  );
+  // Step 1: Ultra-Fast Audio Transcription (~350ms) using dedicated Google transcribe model or flash-lite
+  let transcript = '';
+  try {
+    const transcribePromise = generateGeminiAudioContentWithFallback(
+      {
+        parts: [
+          audioPart,
+          { text: 'Transcribe the spoken Arabic or English audio precisely. Return ONLY the verbatim words spoken. If silent, noise, or unintelligible, return empty text.' },
+        ],
+      },
+      {}
+    );
 
-  const activeContext = contextOverride || globalInMemoryKernelContext?.summaryContext || '';
-  const kernelRulesList = (globalInMemoryKernelContext?.rules || []).map((r: string) => `- ${r}`).join('\n');
-  const kernelInstructionsList = (globalInMemoryKernelContext?.instructions || []).map((i: string) => `- ${i}`).join('\n');
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Audio transcribe timeout')), 4500)
+    );
 
-  const contextDirective = activeContext
-    ? `\nأنت صوت وعقل النواة الذكية. سياق وقواعد النواة المحملة:\n"${activeContext}"\nقواعد النواة:\n${kernelRulesList}\nتعليمات النواة:\n${kernelInstructionsList}\nالتحدث والإجابة يتم حصرياً بصفة النواة.\n`
-    : '';
+    const transcribeRes = await Promise.race([transcribePromise, timeoutPromise]);
+    transcript = (transcribeRes.text || '').replace(/[\r\n]+/g, ' ').trim();
+  } catch (err: any) {
+    console.warn('Fast audio transcription notice:', err.message);
+  }
 
-  const prompt = `استمع لهذا التسجيل الصوتي بدقة. المستخدم يتحدث بالعربية (بمختلف اللهجات العربية أو الفصحى) أو الإنجليزية.${contextDirective}
-1. قم بنسخ وتفريغ الكلمات المنطوقة بدقة بالغة إلى "transcript".
-2. حدد القصد:
-   - "INTENT_BUILD_APP": طلب فتح صفحة بناء التطبيقات (e.g. "افتح صفحة بناء التطبيقات", "ابني تطبيق", "build app")
-   - "INTENT_GENERATE_IMAGE": طلب فتح استوديو الصور (e.g. "افتح صفحة الصور", "توليد الصور", "generate image")
-   - "INTENT_CREATE_GAME": طلب فتح استوديو الألعاب (e.g. "افتح صفحة الالعاب", "انشاء لعبة", "create game")
-   - "INTENT_CREATE_MEDIA": طلب استوديو الفيديو (e.g. "افتح صفحة الفيديو", "انشاء فيديو")
-   - "INTENT_CONNECT_GITHUB": طلب ربط جيت هب (e.g. "افتح صفحة جيت هب", "ربط جيت هب", "github")
-   - "INTENT_CONNECT_SUPABASE": طلب ربط سوبابيس (e.g. "افتح صفحة سوبابيس", "ربط سوبابيس", "supabase")
-   - "INTENT_LINK_KERNEL": طلب ربط ملف النواة (e.g. "اربط النواة", "اختر ملف النواة", "link kernel")
-   - "INTENT_TEACH_KERNEL": طلب صفحة تعليم النواة (e.g. "لنعلم النواة", "تعليم النواة", "teach kernel")
-   - "INTENT_NAVIGATE_BACK": طلب الرجوع (e.g. "ارجع", "رجوع", "العودة", "الصفحة الرئيسية", "back")
-   - "INTENT_CLOSE_MIC": طلب إيقاف التحدث أو المايك (e.g. "إغلاق الميكروفون", "اسكت", "stop mic")
-   - "INTENT_GENERAL_QUERY": جميع المحادثات والأسئلة العامة والاختبارات لقواعد ومعارف النواة.
+  // If silent or empty audio, return immediately without speaking phantom words
+  if (!transcript || transcript.length < 2) {
+    return {
+      transcript: '',
+      intent: 'INTENT_GENERAL_QUERY',
+      confidence: 0,
+      ui_action: 'ROUTE_PREDEFINED',
+      assistant_response: '',
+      voice_spoken_text: '',
+    };
+  }
 
-تعليمات الإجابة:
-- في "assistant_response": أجب بذكاء من خلال النواة وقواعدها المحملة.
-- في "voice_spoken_text": عبارة صوتية مقتضبة جداً وسلسة (أقل من 10 كلمات) تنطق كصوت النواة للمستخدم.
-- إذا كان التسجيل صامتاً تماماً أو ضوضاء فقط، اجعل "transcript" فارغاً "".
+  const cleanText = transcript.trim().toLowerCase();
+
+  // Step 2: Instant Dialectal Heuristic (0ms)
+  const fastMatch = resolveDialectalIntent(cleanText, transcript);
+  if (fastMatch.intent !== 'INTENT_GENERAL_QUERY') {
+    return {
+      transcript,
+      ...fastMatch,
+    };
+  }
+
+  // Step 3: Fast Text LLM for General Query (takes ~250ms with gemini-3.1-flash-lite)
+  try {
+    const activeContext = contextOverride || globalInMemoryKernelContext?.summaryContext || '';
+    const kernelRulesList = (globalInMemoryKernelContext?.rules || []).map((r: string) => `- ${r}`).join('\n');
+    const kernelInstructionsList = (globalInMemoryKernelContext?.instructions || []).map((i: string) => `- ${i}`).join('\n');
+
+    const prompt = `أنت النواة الذكية، صوت ومحرك النواة المستقلة.
+سياق النواة: "${activeContext}"
+قواعد النواة:
+${kernelRulesList}
+تعليمات النواة:
+${kernelInstructionsList}
+
+المستخدم قال: "${transcript}"
+
+المطلوب إجابة سريعة ومباشرة كصوت النواة بالعربية:
+- "assistant_response": إجابة النواة الذكية بالعربية (فقرة قصيرة مفيدة).
+- "voice_spoken_text": عبارة صوتية مقتضبة جداً وسلسة (أقل من 10 كلمات) تنطق كصوت النواة للمستخدم.
 
 Return a strict JSON object:
 {
-  "transcript": "الكلمات المنطوقة بالعربية أو الإنجليزية",
-  "intent": "INTENT_ENUM",
-  "confidence": 0.96,
-  "ui_action": "ROUTE_PREDEFINED",
-  "assistant_response": "إجابة النواة الذكية بالعربية",
-  "voice_spoken_text": "عبارة النواة الصوتية المقتضبة (أقل من 10 كلمات)"
+  "assistant_response": "إجابة النواة الذكية",
+  "voice_spoken_text": "عبارة مقتضبة كصوت النواة"
 }`;
 
-  try {
-    const callPromise = generateGeminiAudioContentWithFallback(
-      {
-        parts: [audioPart, { text: prompt }],
-      },
-      {
-        responseMimeType: 'application/json',
-      }
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('NLU timeout')), 3500)
     );
 
-    const response = await Promise.race([callPromise, timeoutPromise]);
-    const responseText = (response.text || '').trim();
+    const textRes = await Promise.race([
+      generateGeminiContentWithFallback(prompt, {
+        responseMimeType: 'application/json',
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            assistant_response: { type: Type.STRING },
+            voice_spoken_text: { type: Type.STRING },
+          },
+          required: ['assistant_response', 'voice_spoken_text'],
+        },
+      }),
+      timeoutPromise,
+    ]);
 
-    try {
-      const parsed = JSON.parse(responseText);
-      if (parsed.transcript && parsed.transcript.trim()) {
-        const fallback = resolveDialectalIntent(parsed.transcript.toLowerCase(), parsed.transcript);
-        if (fallback.intent === 'INTENT_CLOSE_MIC') {
-          parsed.intent = fallback.intent;
-          parsed.assistant_response = fallback.assistant_response;
-          parsed.voice_spoken_text = fallback.voice_spoken_text;
-        } else if (!parsed.assistant_response && fallback.assistant_response) {
-          parsed.intent = fallback.intent;
-          parsed.assistant_response = fallback.assistant_response;
-          parsed.voice_spoken_text = fallback.voice_spoken_text;
-        }
-        return parsed;
-      }
-    } catch {}
-
-    const cleanText = responseText.replace(/```json|```/g, '').trim();
-    if (cleanText && cleanText.length > 1 && !cleanText.startsWith('{')) {
-      const result = resolveDialectalIntent(cleanText.toLowerCase(), cleanText);
-      return {
-        transcript: cleanText,
-        ...result,
-      };
-    }
+    const parsed = JSON.parse(textRes.text || '{}');
+    return {
+      transcript,
+      intent: 'INTENT_GENERAL_QUERY',
+      confidence: 0.95,
+      ui_action: 'ROUTE_PREDEFINED',
+      assistant_response: parsed.assistant_response || fastMatch.assistant_response,
+      voice_spoken_text: parsed.voice_spoken_text || fastMatch.voice_spoken_text,
+    };
   } catch (err: any) {
-    console.warn('Audio processing warning:', err.message);
+    console.warn('Quick text fallback notice:', err.message);
+    return {
+      transcript,
+      ...fastMatch,
+    };
   }
-
-  // Silence, background noise, or processing failure: NEVER speak phantom phrases!
-  return {
-    transcript: '',
-    intent: 'INTENT_GENERAL_QUERY',
-    confidence: 0,
-    ui_action: 'ROUTE_PREDEFINED',
-    assistant_response: '',
-    voice_spoken_text: '',
-  };
 }
 
 async function generateTTSAudio(text: string, voiceName: string = 'Kore'): Promise<string | null> {
   if (!text || !apiKey || apiKey === 'MY_GEMINI_API_KEY') return null;
 
-  // Multi-tier TTS model list with automatic quota fallback:
-  // 1. gemini-3.8-flash-tts (expressive, high quality, active quota)
-  // 2. gemini-3.8-flash-lite-tts (efficient TTS)
-  const ttsModels = ['gemini-3.8-flash-tts', 'gemini-3.8-flash-lite-tts'];
+  // Multi-tier TTS model list with automatic quota fallback (flash-lite prioritized for lowest latency):
+  // 1. gemini-3.8-flash-lite-tts (high throughput, fast response)
+  // 2. gemini-3.8-flash-tts (expressive fallback)
+  const ttsModels = ['gemini-3.8-flash-lite-tts', 'gemini-3.8-flash-tts'];
 
   for (const model of ttsModels) {
     try {

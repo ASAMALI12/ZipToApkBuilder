@@ -1,4 +1,5 @@
 import { ProjectFile, KernelMemoryLog, GitHubConfig, SupabaseConfig, BoundKernel } from '../types/kernel';
+import { getApiUrl } from './apiConfig';
 
 const STORAGE_KEYS = {
   PROJECT_FILES: 'kernel_project_files_v1',
@@ -304,7 +305,7 @@ export class StorageEngine {
 
       // Sync immediately to server session memory
       try {
-        await fetch('/api/kernel/session-init', {
+        await fetch(getApiUrl('/api/kernel/session-init'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({

@@ -28,7 +28,12 @@ import {
   Layers,
   Smartphone,
   Apple,
+  Wifi,
+  WifiOff,
+  Server,
 } from 'lucide-react';
+import { ServerSettingsModal } from '../modals/ServerSettingsModal';
+import { testBackendConnection } from '../../services/apiConfig';
 
 interface CentralCallOrbProps {
   onQuickIntent: (phrase: string) => void;
@@ -69,6 +74,20 @@ export const CentralCallOrb: React.FC<CentralCallOrbProps> = ({
   const [sensitivityPreset, setSensitivityPreset] = useState<'HIGH' | 'NORMAL' | 'NOISE_ISOLATION'>('HIGH');
   const [linkingNotice, setLinkingNotice] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [isServerModalOpen, setIsServerModalOpen] = useState<boolean>(false);
+  const [serverPingState, setServerPingState] = useState<{ isReachable: boolean; latencyMs: number } | null>(null);
+
+  const checkServerStatus = () => {
+    testBackendConnection().then((res) => {
+      setServerPingState({ isReachable: res.isReachable, latencyMs: res.latencyMs });
+    }).catch(() => {
+      setServerPingState({ isReachable: false, latencyMs: 0 });
+    });
+  };
+
+  useEffect(() => {
+    checkServerStatus();
+  }, []);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -274,7 +293,7 @@ export const CentralCallOrb: React.FC<CentralCallOrbProps> = ({
           )}
         </div>
 
-        {/* Status Live Indicator */}
+        {/* Status Live Indicator & Server Connection */}
         <div className="flex items-center gap-2">
           {boundKernel && (
             <button
@@ -285,6 +304,25 @@ export const CentralCallOrb: React.FC<CentralCallOrbProps> = ({
               فك الارتباط
             </button>
           )}
+
+          <button
+            onClick={() => setIsServerModalOpen(true)}
+            className={`flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-xs font-mono border transition-all cursor-pointer ${
+              serverPingState?.isReachable
+                ? 'bg-emerald-950/40 border-emerald-500/40 text-emerald-300 hover:bg-emerald-900/40'
+                : serverPingState === null
+                ? 'bg-slate-900 border-slate-800 text-slate-400 hover:bg-slate-800'
+                : 'bg-rose-950/40 border-rose-500/40 text-rose-300 hover:bg-rose-900/40'
+            }`}
+            title="إعدادات الخادم وحالة اتصال الـ APK"
+          >
+            {serverPingState?.isReachable ? (
+              <Wifi className="w-3.5 h-3.5 text-emerald-400" />
+            ) : (
+              <WifiOff className="w-3.5 h-3.5 text-rose-400" />
+            )}
+            <span>{serverPingState?.isReachable ? `${serverPingState.latencyMs}ms` : 'الخادم / APK'}</span>
+          </button>
 
           <div className="flex items-center gap-1.5 text-[11px] font-mono text-slate-300 bg-slate-900 px-2.5 py-1 rounded-xl border border-slate-800">
             <span
@@ -731,6 +769,13 @@ export const CentralCallOrb: React.FC<CentralCallOrbProps> = ({
           </button>
         </form>
       </footer>
+
+      {/* Server & APK Connection Modal */}
+      <ServerSettingsModal
+        isOpen={isServerModalOpen}
+        onClose={() => setIsServerModalOpen(false)}
+        onConnectionChange={checkServerStatus}
+      />
     </div>
   );
 };

@@ -1,4 +1,5 @@
 import { IntentResult, IntentEnum, UIAction, KernelDiagnosticReport } from '../types/kernel';
+import { getApiUrl } from './apiConfig';
 
 /**
  * High-Speed Arabic Text Normalizer:
@@ -305,7 +306,7 @@ export async function parseUtterance(
 
   // Tier 2: Remote Contextual Dialectal Classifier via fast endpoint (executed ONCE)
   try {
-    const res = await fetch('/api/nlu/parse-intent', {
+    const res = await fetch(getApiUrl('/api/nlu/parse-intent'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -341,7 +342,7 @@ export async function parseUtterance(
 
 export async function requestTTSAudio(text: string): Promise<string | null> {
   try {
-    const res = await fetch('/api/tts', {
+    const res = await fetch(getApiUrl('/api/tts'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text }),

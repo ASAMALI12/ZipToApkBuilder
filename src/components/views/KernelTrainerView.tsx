@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { BoundKernel } from '../../types/kernel';
 import { StorageEngine } from '../../services/storageEngine';
+import { getApiUrl } from '../../services/apiConfig';
 import {
   GraduationCap,
   Save,
@@ -65,7 +66,7 @@ export const KernelTrainerView: React.FC<KernelTrainerViewProps> = ({
 
       // Immediately sync with server session memory
       try {
-        await fetch('/api/kernel/session-init', {
+        await fetch(getApiUrl('/api/kernel/session-init'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({

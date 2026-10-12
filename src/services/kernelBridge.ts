@@ -1,6 +1,7 @@
 import { BoundKernel, KernelDeliverable } from '../types/kernel';
 import { StorageEngine } from './storageEngine';
 import { initOrExtractZipKernel, exportGeneratedAppZip } from './zipEngine';
+import { getApiUrl } from './apiConfig';
 
 /**
  * KernelBridge: The unified execution bridge between the user and the smart Kernel.
@@ -86,7 +87,7 @@ export class KernelBridge {
 
     // Sync context with server for grounded intent generation
     try {
-      await fetch('/api/kernel/session-init', {
+      await fetch(getApiUrl('/api/kernel/session-init'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -111,7 +112,7 @@ export class KernelBridge {
     const id = `img_${Date.now()}`;
 
     try {
-      const response = await fetch('/api/media/generate-image', {
+      const response = await fetch(getApiUrl('/api/media/generate-image'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ prompt: cleanPrompt, aspectRatio: '1:1' }),

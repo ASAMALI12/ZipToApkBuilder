@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { StorageEngine } from '../../services/storageEngine';
 import { SupabaseConfig } from '../../types/kernel';
+import { getApiUrl } from '../../services/apiConfig';
 import {
   Database,
   ArrowRight,
@@ -26,7 +27,7 @@ export const SupabaseBridgeView: React.FC<SupabaseBridgeViewProps> = ({ onBackTo
     setStatusMsg(null);
 
     try {
-      const res = await fetch('/api/supabase/test-connection', {
+      const res = await fetch(getApiUrl('/api/supabase/test-connection'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ supabaseUrl: url.trim(), supabaseKey: anonKey.trim() }),

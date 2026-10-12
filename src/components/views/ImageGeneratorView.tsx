@@ -6,6 +6,7 @@ import {
   ArrowRight,
   RefreshCw,
 } from 'lucide-react';
+import { getApiUrl } from '../../services/apiConfig';
 
 interface ImageGeneratorViewProps {
   onBackToHome: () => void;
@@ -46,7 +47,7 @@ export const ImageGeneratorView: React.FC<ImageGeneratorViewProps> = ({ onBackTo
     setGenerationNotice(null);
 
     try {
-      const res = await fetch('/api/media/generate-image', {
+      const res = await fetch(getApiUrl('/api/media/generate-image'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ prompt: textToUse, aspectRatio }),

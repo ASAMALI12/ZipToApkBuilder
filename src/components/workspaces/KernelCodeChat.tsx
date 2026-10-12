@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { ProjectFile, KernelMemoryLog } from '../../types/kernel';
 import { inspectAndRepairFiles } from '../../services/codeLinter';
+import { getApiUrl } from '../../services/apiConfig';
 import {
   Terminal,
   Send,
@@ -58,7 +59,7 @@ export const KernelCodeChat: React.FC<KernelCodeChatProps> = ({
 
     // Call NLU / Gemini chat
     try {
-      const res = await fetch('/api/nlu/parse-intent', {
+      const res = await fetch(getApiUrl('/api/nlu/parse-intent'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ utterance: text.trim() }),

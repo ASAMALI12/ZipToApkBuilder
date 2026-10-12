@@ -10,6 +10,7 @@ import { audioEngine } from './services/audioEngine';
 import { parseUtterance, requestTTSAudio, diagnoseCommandDefect } from './services/intentParser';
 import { StorageEngine } from './services/storageEngine';
 import { KernelBridge } from './services/kernelBridge';
+import { getApiUrl } from './services/apiConfig';
 
 import { CentralCallOrb } from './components/voice/CentralCallOrb';
 import { FloatingVoiceOrb } from './components/voice/FloatingVoiceOrb';
@@ -226,7 +227,7 @@ export default function App() {
     const knowledge = StorageEngine.loadLearnedKnowledge();
     const kernel = StorageEngine.loadBoundKernel();
     if (knowledge || kernel) {
-      fetch('/api/kernel/session-init', {
+      fetch(getApiUrl('/api/kernel/session-init'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

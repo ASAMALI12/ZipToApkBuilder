@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { GitHubConfig, SupabaseConfig } from '../../types/kernel';
 import { StorageEngine } from '../../services/storageEngine';
+import { getApiUrl } from '../../services/apiConfig';
 import {
   Github,
   Database,
@@ -39,7 +40,7 @@ export const IntegrationsModal: React.FC<IntegrationsModalProps> = ({ isOpen, on
     setIsTestingGit(true);
     setGitStatus(null);
     try {
-      const res = await fetch('/api/github/validate-token', {
+      const res = await fetch(getApiUrl('/api/github/validate-token'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ token: gitHubConfig.pat.trim() }),
@@ -69,7 +70,7 @@ export const IntegrationsModal: React.FC<IntegrationsModalProps> = ({ isOpen, on
     setIsTestingSupa(true);
     setSupaStatus(null);
     try {
-      const res = await fetch('/api/supabase/test-connection', {
+      const res = await fetch(getApiUrl('/api/supabase/test-connection'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
